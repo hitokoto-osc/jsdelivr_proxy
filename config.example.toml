@@ -1,3 +1,8 @@
+[jsdelivr]
+mirror = "https://jsdelivr-fetcher.a632079.workers.dev/"
+user_agent = ""
+host = ""
+
 [database]
 host = "127.0.0.1"
 port = 3306

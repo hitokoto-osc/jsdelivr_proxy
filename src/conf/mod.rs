@@ -7,16 +7,20 @@ mod database;
 mod env;
 mod rabbitmq;
 mod redis;
+mod jsdelivr;
 use self::redis::Redis;
 use database::Database;
 use env::Environment;
 use rabbitmq::RabbitMQ;
+use jsdelivr::Jsdelivr;
+
 #[derive(Deserialize)]
 pub struct Config {
+    pub env: Environment,
     pub database: Database,
+    pub jsdelivr: Jsdelivr,
     pub redis: Redis,
     pub rabbitmq: RabbitMQ,
-    pub env: Environment,
 }
 
 impl Config {

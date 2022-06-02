@@ -1,20 +1,20 @@
-use super::utils::response::success;
-use crate::backend::utils::response::ResponseBase;
+pub mod jsdelivr;
+use super::utils::response::{success};
+use crate::{backend::utils::response::APIResponse};
 use chrono::prelude::{DateTime, Utc};
 use rocket::{
     get,
-    response::status::Custom,
-    serde::json::{serde_json::json, Json, Value},
+    serde::json::{serde_json::json, Value},
 };
 use timeago::Formatter;
 
 #[get("/")]
-pub fn index() -> Custom<Json<ResponseBase<Value>>> {
+pub fn index() -> APIResponse<Value> {
     success(json!([]))
 }
 
 #[get("/about")]
-pub fn about() -> Custom<Json<ResponseBase<Value>>> {
+pub fn about() -> APIResponse<Value> {
     let now = Utc::now();
     let formatter = Formatter::new();
     success(json!({
