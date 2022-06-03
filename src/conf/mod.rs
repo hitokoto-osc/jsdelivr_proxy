@@ -5,14 +5,14 @@ use serde::Deserialize;
 
 mod database;
 mod env;
+mod jsdelivr;
 mod rabbitmq;
 mod redis;
-mod jsdelivr;
 use self::redis::Redis;
 use database::Database;
 use env::Environment;
-use rabbitmq::RabbitMQ;
 use jsdelivr::Jsdelivr;
+use rabbitmq::RabbitMQ;
 
 #[derive(Deserialize)]
 pub struct Config {

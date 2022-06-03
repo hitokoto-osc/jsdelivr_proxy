@@ -1,6 +1,6 @@
 pub mod jsdelivr;
-use super::utils::response::{success};
-use crate::{backend::utils::response::APIResponse};
+use super::utils::response::success;
+use crate::backend::utils::response::APIResponse;
 use chrono::prelude::{DateTime, Utc};
 use rocket::{
     get,
