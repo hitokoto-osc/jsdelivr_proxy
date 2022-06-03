@@ -11,66 +11,66 @@ use crate::{
 
 #[derive(Responder)]
 pub enum JSDelivrResponse {
-    JSON(APIResponse<Value>),
+    Json(APIResponse<Value>),
     Raw(String),
 }
 
 // impl errors
 #[derive(Debug)]
-pub enum FetchJSDelivrError {
-    ParseFailed(ParseError),
-    PathCovertFailed,
-    ReqwestOperationFailed(reqwest::Error),
-    RequestStatusCheckFailed(u16),
+pub enum FetchJSDelivrFailureError {
+    Parse(ParseError),
+    PathCovert,
+    ReqwestOperation(reqwest::Error),
+    RequestStatusCheck(u16),
 }
 
-impl fmt::Display for FetchJSDelivrError {
+impl fmt::Display for FetchJSDelivrFailureError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            FetchJSDelivrError::ParseFailed(ref e) => write!(f, "{}", e.to_string()),
-            FetchJSDelivrError::PathCovertFailed => write!(f, "Path is not valid UTF-8"),
-            FetchJSDelivrError::ReqwestOperationFailed(ref e) => write!(f, "{}", e.to_string()),
-            FetchJSDelivrError::RequestStatusCheckFailed(ref v) => {
+            FetchJSDelivrFailureError::Parse(ref e) => write!(f, "{}", e),
+            FetchJSDelivrFailureError::PathCovert => write!(f, "Path is not valid UTF-8"),
+            FetchJSDelivrFailureError::ReqwestOperation(ref e) => write!(f, "{}", e),
+            FetchJSDelivrFailureError::RequestStatusCheck(ref v) => {
                 write!(f, "Request status check failed: {}", v)
             }
         }
     }
 }
 
-impl error::Error for FetchJSDelivrError {
+impl error::Error for FetchJSDelivrFailureError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match *self {
-            FetchJSDelivrError::ParseFailed(ref e) => Some(e),
-            FetchJSDelivrError::PathCovertFailed => None,
-            FetchJSDelivrError::RequestStatusCheckFailed(ref e) => None,
-            FetchJSDelivrError::ReqwestOperationFailed(ref e) => Some(e),
+            FetchJSDelivrFailureError::Parse(ref e) => Some(e),
+            FetchJSDelivrFailureError::PathCovert => None,
+            FetchJSDelivrFailureError::RequestStatusCheck(ref e) => None,
+            FetchJSDelivrFailureError::ReqwestOperation(ref e) => Some(e),
         }
     }
 }
 
-impl From<ParseError> for FetchJSDelivrError {
+impl From<ParseError> for FetchJSDelivrFailureError {
     fn from(e: ParseError) -> Self {
-        FetchJSDelivrError::ParseFailed(e)
+        FetchJSDelivrFailureError::Parse(e)
     }
 }
 
-impl From<reqwest::Error> for FetchJSDelivrError {
+impl From<reqwest::Error> for FetchJSDelivrFailureError {
     fn from(e: reqwest::Error) -> Self {
-        FetchJSDelivrError::ReqwestOperationFailed(e)
+        FetchJSDelivrFailureError::ReqwestOperation(e)
     }
 }
 
-fn convert_url(base: &str, path: PathBuf) -> Result<Url, FetchJSDelivrError> {
+fn convert_url(base: &str, path: PathBuf) -> Result<Url, FetchJSDelivrFailureError> {
     let mut url = Url::parse(base)?;
     let path = match path.into_os_string().into_string() {
         Ok(v) => v,
-        Err(_) => return Err(FetchJSDelivrError::PathCovertFailed),
+        Err(_) => return Err(FetchJSDelivrFailureError::PathCovert),
     };
     url.set_path(path.as_str());
     Ok(url)
 }
 
-async fn fetch_jsdelivr(path: PathBuf) -> Result<String, FetchJSDelivrError> {
+async fn fetch_jsdelivr(path: PathBuf) -> Result<String, FetchJSDelivrFailureError> {
     let client = Client::builder()
         .user_agent(match &(*CONFIG).jsdelivr.user_agent {
             Some(v) => v,
@@ -82,7 +82,7 @@ async fn fetch_jsdelivr(path: PathBuf) -> Result<String, FetchJSDelivrError> {
         None => "https://cdn.jsdelivr.net",
     };
     let response = client
-        .get(convert_url(&mirror, path)?)
+        .get(convert_url(mirror, path)?)
         .header(
             "Referer",
             match &(*CONFIG).jsdelivr.referer {
@@ -94,7 +94,7 @@ async fn fetch_jsdelivr(path: PathBuf) -> Result<String, FetchJSDelivrError> {
         .await?;
     let status = response.status();
     if !status.is_success() {
-        return Err(FetchJSDelivrError::RequestStatusCheckFailed(
+        return Err(FetchJSDelivrFailureError::RequestStatusCheck(
             status.as_u16(),
         ));
     }
@@ -106,16 +106,16 @@ pub async fn get(path: PathBuf) -> JSDelivrResponse {
     match fetch_jsdelivr(path).await {
         Ok(v) => JSDelivrResponse::Raw(v),
         Err(e) => match e {
-            FetchJSDelivrError::ParseFailed(e) => {
-                JSDelivrResponse::JSON(fail_with_message(400, None, e.to_string()))
+            FetchJSDelivrFailureError::Parse(e) => {
+                JSDelivrResponse::Json(fail_with_message(400, None, e.to_string()))
             }
-            FetchJSDelivrError::ReqwestOperationFailed(e) => {
-                JSDelivrResponse::JSON(fail_with_message(500, None, e.to_string()))
+            FetchJSDelivrFailureError::ReqwestOperation(e) => {
+                JSDelivrResponse::Json(fail_with_message(500, None, e.to_string()))
             }
-            FetchJSDelivrError::RequestStatusCheckFailed(v) => {
-                JSDelivrResponse::JSON(fail(v as i64, None))
+            FetchJSDelivrFailureError::RequestStatusCheck(v) => {
+                JSDelivrResponse::Json(fail(v as i64, None))
             }
-            FetchJSDelivrError::PathCovertFailed => JSDelivrResponse::JSON(fail(400, None)),
+            FetchJSDelivrFailureError::PathCovert => JSDelivrResponse::Json(fail(400, None)),
         },
     }
 }
