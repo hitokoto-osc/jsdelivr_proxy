@@ -1,7 +1,10 @@
-use std::{fmt::{self, Formatter}, error};
+use std::{
+    error,
+    fmt::{self, Formatter},
+};
 use url::ParseError;
 
-use crate::cache::{ CacheError};
+use crate::cache::CacheError;
 
 // impl errors
 #[derive(Debug)]
@@ -31,7 +34,7 @@ impl error::Error for FetchJSDelivrFailureError {
             FetchJSDelivrFailureError::Parse(ref e) => Some(e),
             FetchJSDelivrFailureError::PathCovert => None,
             FetchJSDelivrFailureError::RequestStatusCheck(_) => None,
-            FetchJSDelivrFailureError::ReqwestOperation(ref e) => Some(e)
+            FetchJSDelivrFailureError::ReqwestOperation(ref e) => Some(e),
         }
     }
 }
@@ -48,10 +51,7 @@ impl From<reqwest::Error> for FetchJSDelivrFailureError {
     }
 }
 
-
-
 // impl Cache
-
 
 impl fmt::Display for CacheError<FetchJSDelivrFailureError> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -72,5 +72,3 @@ impl error::Error for CacheError<FetchJSDelivrFailureError> {
         }
     }
 }
-
-

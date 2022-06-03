@@ -49,7 +49,7 @@ impl<E: error::Error> fmt::Display for RememberFuncCallError<E> {
 }
 
 impl<E: error::Error + 'static> error::Error for RememberFuncCallError<E> {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)>{
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         Some(&self.0)
     }
 }
@@ -60,7 +60,6 @@ impl<E: error::Error> From<E> for RememberFuncCallError<E> {
     }
 }
 
-
 // 缓存内部错误
 #[derive(Debug)]
 pub enum CacheError<T: error::Error> {
@@ -69,24 +68,23 @@ pub enum CacheError<T: error::Error> {
     RememberFuncCall(RememberFuncCallError<T>),
 }
 
-impl <E: error::Error> From<RedisError> for CacheError<E> {
+impl<E: error::Error> From<RedisError> for CacheError<E> {
     fn from(e: RedisError) -> Self {
         CacheError::Redis(e)
     }
 }
 
-impl <E: error::Error> From<PoolError> for CacheError<E> {
+impl<E: error::Error> From<PoolError> for CacheError<E> {
     fn from(e: PoolError) -> Self {
         CacheError::Pool(e)
     }
 }
 
-impl <E: error::Error> From<RememberFuncCallError<E>> for CacheError<E> {
+impl<E: error::Error> From<RememberFuncCallError<E>> for CacheError<E> {
     fn from(e: RememberFuncCallError<E>) -> Self {
         CacheError::RememberFuncCall(e)
     }
 }
-
 
 pub async fn remember<'a, T, E, F, Fut, RV>(
     key: T,
