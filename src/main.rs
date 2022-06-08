@@ -5,7 +5,7 @@ use tracing::{info, warn};
 mod backend;
 mod cache;
 mod command;
-mod conf;
+pub mod conf;
 mod logger;
 pub mod utils;
 

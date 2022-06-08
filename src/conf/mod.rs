@@ -3,11 +3,11 @@ use std::error::Error;
 use config::{Config as conf, Environment as Env, File};
 use serde::Deserialize;
 
-mod database;
-mod env;
-mod jsdelivr;
-mod rabbitmq;
-mod redis;
+pub mod database;
+pub mod env;
+pub mod jsdelivr;
+pub mod rabbitmq;
+pub mod redis;
 use self::redis::Redis;
 use database::Database;
 use env::Environment;
