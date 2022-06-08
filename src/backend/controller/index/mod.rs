@@ -1,16 +1,26 @@
 pub mod jsdelivr;
-use super::utils::response::success;
-use crate::backend::utils::response::APIResponse;
+use crate::utils::response::success;
+use crate::utils::response::APIResponse;
 use chrono::prelude::{DateTime, Utc};
 use rocket::{
     get,
     serde::json::{serde_json::json, Value},
+    Responder,
 };
 use timeago::Formatter;
 
 #[get("/")]
 pub fn index() -> APIResponse<Value> {
     success(json!([]))
+}
+
+#[derive(Responder)]
+#[response(status = 200, content_type = "image/x-icon")]
+pub struct FaviconResponser<'a>(&'a [u8]);
+
+#[get("/favicon.ico")]
+pub fn favicon() -> FaviconResponser<'static> {
+    FaviconResponser(include_bytes!("../../../../assets/images/favicon.ico"))
 }
 
 #[get("/about")]

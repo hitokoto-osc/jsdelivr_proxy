@@ -3,9 +3,10 @@ use std::path::PathBuf;
 
 use reqwest::{Client, Url};
 use rocket::{get, serde::json::Value, Responder};
+use sha2::{Digest, Sha256};
 
+use crate::utils::response::{fail, fail_with_message, APIResponse};
 use crate::{
-    backend::utils::response::{fail, fail_with_message, APIResponse},
     cache::{self, CacheError},
     CONFIG,
 };
@@ -59,8 +60,10 @@ async fn fetch_jsdelivr(path: PathBuf) -> Result<String, types::FetchJSDelivrFai
 
 #[get("/<path..>")]
 pub async fn get(path: PathBuf) -> JSDelivrResponse {
+    let key: &[u8] = &Sha256::digest(path.to_string_lossy().to_string().as_bytes());
+    let key: String = base16ct::lower::encode_string(key);
     let res: Result<String, CacheError<types::FetchJSDelivrFailureError>> = cache::remember(
-        path.to_string_lossy().to_string(),
+        key,
         || async {
             match fetch_jsdelivr(path).await {
                 Ok(v) => Ok(v),

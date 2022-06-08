@@ -7,6 +7,7 @@ mod cache;
 mod command;
 mod conf;
 mod logger;
+pub mod utils;
 
 #[macro_use]
 extern crate lazy_static;
