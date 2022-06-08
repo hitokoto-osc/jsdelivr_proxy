@@ -100,13 +100,13 @@ jobs:
 
 
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: wheels
           path: dist
 
       - name: Upload binary artifacts
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: binaries
           path: |
@@ -140,12 +140,12 @@ jobs:
       - name: Archive binary
         run: tar czvf target/release/jsdelivr-proxy-${{ matrix.platform.target }}.tar.gz -C target/${{ matrix.platform.target }}/release jsdelivr-proxy
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: wheels
           path: dist
       - name: Upload binary artifacts
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: binaries
           path: target/release/jsdelivr-proxy-${{ matrix.platform.target }}.tar.gz
