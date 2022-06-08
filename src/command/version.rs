@@ -32,10 +32,10 @@ Build Platform: {}
                     now
                 )
                 .red(),
-            env!("BUILD_TIME").cyan(),
+            env!("BUILD_DATE").cyan(),
             formatter
                 .convert_chrono(
-                    DateTime::parse_from_rfc3339(env!("BUIlD_TIME")).unwrap(),
+                    DateTime::parse_from_rfc3339(env!("BUILD_DATE")).unwrap(),
                     now
                 )
                 .red(),

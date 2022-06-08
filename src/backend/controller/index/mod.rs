@@ -45,10 +45,10 @@ pub fn about() -> APIResponse<Value> {
             ),
             "build_time": format!(
                 "{} ({})",
-                env!("BUILD_TIME"),
+                env!("BUILD_DATE"),
                 formatter
                     .convert_chrono(
-                        DateTime::parse_from_rfc3339(env!("BUIlD_TIME")).unwrap(),
+                        DateTime::parse_from_rfc3339(env!("BUILD_DATE")).unwrap(),
                         now
                     ),
             ),
