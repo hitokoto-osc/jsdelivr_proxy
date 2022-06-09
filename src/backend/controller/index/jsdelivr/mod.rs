@@ -1,5 +1,5 @@
 pub mod types;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use reqwest::{Client, Url};
 use rocket::{get, serde::json::Value, Responder};
@@ -19,10 +19,22 @@ pub enum JSDelivrResponse {
 
 fn convert_url(base: &str, path: PathBuf) -> Result<Url, types::FetchJSDelivrFailureError> {
     let mut url = Url::parse(base)?;
-    let path = match path.into_os_string().into_string() {
+    let mut path = match path.into_os_string().into_string() {
         Ok(v) => v,
         Err(_) => return Err(types::FetchJSDelivrFailureError::PathCovert),
     };
+    let raw_path = url.path();
+    if raw_path != "/" {
+        path = match Path::new("/")
+            .join(raw_path)
+            .join(path)
+            .into_os_string()
+            .into_string()
+        {
+            Ok(v) => v,
+            Err(_) => return Err(types::FetchJSDelivrFailureError::PathCovert),
+        };
+    }
     url.set_path(path.as_str());
     Ok(url)
 }
@@ -82,7 +94,7 @@ pub async fn get(path: PathBuf) -> JSDelivrResponse {
                 }
                 types::FetchJSDelivrFailureError::RequestStatusCheck(status) => {
                     JSDelivrResponse::Json(fail(*status as i64, None))
-                },
+                }
                 _ => JSDelivrResponse::Json(fail_with_message(400, None, e.to_string())),
             },
             _ => JSDelivrResponse::Json(fail_with_message(500, None, e.to_string())),
