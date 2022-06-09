@@ -2,10 +2,20 @@ mod controller;
 
 use crate::{conf::env::Environment, CONFIG};
 use controller::*;
-use rocket::{figment::Profile, routes, Config};
+use rocket::{
+    figment::{
+        providers::{Env, Format, Toml},
+        Figment, Profile,
+    },
+    log::LogLevel,
+    routes, Config,
+};
 
 fn config_provider() -> rocket::figment::Figment {
-    Config::figment()
+    Figment::from(Config::default())
+        .merge(("log_level", LogLevel::Normal))
+        .merge(Toml::file(Env::var_or("ROCKET_CONFIG", "Rocket.toml")).nested())
+        .merge(Env::prefixed("ROCKET_").ignore(&["PROFILE"]).global())
         .merge((
             "port",
             match &(*CONFIG).server.port {
