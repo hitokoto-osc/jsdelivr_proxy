@@ -18,11 +18,11 @@ pub enum FetchJSDelivrFailureError {
 impl fmt::Display for FetchJSDelivrFailureError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            FetchJSDelivrFailureError::Parse(ref e) => write!(f, "{}", e),
-            FetchJSDelivrFailureError::PathCovert => write!(f, "Path is not valid UTF-8"),
-            FetchJSDelivrFailureError::ReqwestOperation(ref e) => write!(f, "{}", e),
+            FetchJSDelivrFailureError::Parse(ref e) => write!(f, "FetchJSDelivrFailureError::Parse: {}", e),
+            FetchJSDelivrFailureError::PathCovert => write!(f, "FetchJSDelivrFailureError::PathCovert: Path is not valid UTF-8"),
+            FetchJSDelivrFailureError::ReqwestOperation(ref e) => write!(f, "FetchJSDelivrFailureError::ReqwestOperation: {}", e),
             FetchJSDelivrFailureError::RequestStatusCheck(ref v) => {
-                write!(f, "Request status check failed: {}", v)
+                write!(f, "FetchJSDelivrFailureError::RequestStatusCheck: Request status check failed: {}", v)
             }
         }
     }
@@ -56,9 +56,9 @@ impl From<reqwest::Error> for FetchJSDelivrFailureError {
 impl fmt::Display for CacheError<FetchJSDelivrFailureError> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match *self {
-            CacheError::Pool(ref e) => write!(f, "{}", e),
-            CacheError::Redis(ref e) => write!(f, "{}", e),
-            CacheError::RememberFuncCall(ref e) => write!(f, "Call Remember Func error: {}", e),
+            CacheError::Pool(ref e) => write!(f, "CacheError::Pool: {}", e),
+            CacheError::Redis(ref e) => write!(f, "CacheError::Pool: {}", e),
+            CacheError::RememberFuncCall(ref e) => write!(f, "CacheError::RememberFuncCall: {}", e),
         }
     }
 }

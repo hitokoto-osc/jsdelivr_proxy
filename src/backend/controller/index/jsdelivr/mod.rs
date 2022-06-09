@@ -76,26 +76,16 @@ pub async fn get(path: PathBuf) -> JSDelivrResponse {
     match res {
         Ok(v) => JSDelivrResponse::Raw(v),
         Err(ref e) => match e {
-            CacheError::Pool(e) => {
-                JSDelivrResponse::Json(fail_with_message(500, None, e.to_string()))
-            }
-            CacheError::Redis(e) => {
-                JSDelivrResponse::Json(fail_with_message(500, None, e.to_string()))
-            }
             CacheError::RememberFuncCall(v) => match &v.0 {
-                types::FetchJSDelivrFailureError::Parse(e) => {
-                    JSDelivrResponse::Json(fail_with_message(400, None, e.to_string()))
-                }
-                types::FetchJSDelivrFailureError::PathCovert => JSDelivrResponse::Json(
-                    fail_with_message(400, None, "Path is not valid UTF-8".to_string()),
-                ),
-                types::FetchJSDelivrFailureError::ReqwestOperation(e) => {
+                types::FetchJSDelivrFailureError::ReqwestOperation(_) => {
                     JSDelivrResponse::Json(fail_with_message(500, None, e.to_string()))
                 }
                 types::FetchJSDelivrFailureError::RequestStatusCheck(status) => {
                     JSDelivrResponse::Json(fail(*status as i64, None))
-                }
+                },
+                _ => JSDelivrResponse::Json(fail_with_message(400, None, e.to_string())),
             },
+            _ => JSDelivrResponse::Json(fail_with_message(500, None, e.to_string())),
         },
     }
 }
