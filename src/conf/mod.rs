@@ -8,6 +8,7 @@ pub mod env;
 pub mod jsdelivr;
 pub mod rabbitmq;
 pub mod redis;
+pub mod server;
 use self::redis::Redis;
 use database::Database;
 use env::Environment;
@@ -21,6 +22,7 @@ pub struct Config {
     pub jsdelivr: Jsdelivr,
     pub redis: Redis,
     pub rabbitmq: RabbitMQ,
+    pub server: server::Server
 }
 
 impl Config {
