@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use reqwest::{Client, Url};
 use rocket::{get, serde::json::Value, Responder};
 use sha2::{Digest, Sha256};
+use tracing::{error, instrument};
 
 use crate::utils::response::{fail, fail_with_message, APIResponse};
 use crate::{
@@ -71,6 +72,7 @@ async fn fetch_jsdelivr(path: PathBuf) -> Result<String, types::FetchJSDelivrFai
 }
 
 #[get("/<path..>")]
+#[instrument]
 pub async fn get(path: PathBuf) -> JSDelivrResponse {
     let key: &[u8] = &Sha256::digest(path.to_string_lossy().to_string().as_bytes());
     let key: String = base16ct::lower::encode_string(key);
@@ -87,17 +89,20 @@ pub async fn get(path: PathBuf) -> JSDelivrResponse {
     .await;
     match res {
         Ok(v) => JSDelivrResponse::Raw(v),
-        Err(ref e) => match e {
-            CacheError::RememberFuncCall(v) => match &v.0 {
-                types::FetchJSDelivrFailureError::ReqwestOperation(_) => {
-                    JSDelivrResponse::Json(fail_with_message(500, None, e.to_string()))
-                }
-                types::FetchJSDelivrFailureError::RequestStatusCheck(status) => {
-                    JSDelivrResponse::Json(fail(*status as i64, None))
-                }
-                _ => JSDelivrResponse::Json(fail_with_message(400, None, e.to_string())),
-            },
-            _ => JSDelivrResponse::Json(fail_with_message(500, None, e.to_string())),
-        },
+        Err(ref e) => {
+            error!("{:?}", e);
+            match e {
+                CacheError::RememberFuncCall(v) => match &v.0 {
+                    types::FetchJSDelivrFailureError::ReqwestOperation(_) => {
+                        JSDelivrResponse::Json(fail_with_message(500, None, e.to_string()))
+                    }
+                    types::FetchJSDelivrFailureError::RequestStatusCheck(status) => {
+                        JSDelivrResponse::Json(fail(*status as i64, None))
+                    }
+                    _ => JSDelivrResponse::Json(fail_with_message(400, None, e.to_string())),
+                },
+                _ => JSDelivrResponse::Json(fail_with_message(500, None, e.to_string())),
+            }
+        }
     }
 }
