@@ -1,8 +1,11 @@
 pub mod types;
+use std::error;
 use std::path::{Path, PathBuf};
 
+use deadpool_redis::redis;
 use reqwest::{Client, Url};
 use rocket::{get, serde::json::Value, Responder};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{error, instrument};
 
@@ -38,6 +41,47 @@ fn convert_url(base: &str, path: PathBuf) -> Result<Url, types::FetchJSDelivrFai
     }
     url.set_path(path.as_str());
     Ok(url)
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct JSDelivrResource<'a> {
+    mime: &'a str,
+    data: &'a [u8],
+}
+
+impl<'a> redis::FromRedisValue for JSDelivrResource<'a> {
+    fn from_redis_value(value: &redis::Value) -> redis::RedisResult<Self> {
+        match value {
+            redis::Value::Data(data) => match bincode::deserialize::<JSDelivrResource>(data) {
+                Ok(v) => Ok(v),
+                Err(e) => Err(redis::RedisError::from((
+                    redis::ErrorKind::ExecAbortError,
+                    "Deserialize Failed",
+                    e.to_string(),
+                ))),
+            },
+            _ => Err(redis::RedisError::from((
+                redis::ErrorKind::TypeError,
+                "Invalid type",
+            ))),
+        }
+    }
+}
+
+impl<'a> redis::ToRedisArgs for JSDelivrResource<'a> {
+    fn write_redis_args<W: std::io::Write>(&self, out: &mut W) -> redis::RedisResult<()> {
+         if let Err(e) = out.write_all(match bincode::serialize(self) {
+            Ok(ref v) => v,
+            Err(e) => return Err(redis::RedisError::from((
+                redis::ErrorKind::ExecAbortError,
+                "Serialize Failed",
+                e.to_string(),
+            )))
+        }) {
+            return Err(redis::RedisError::from(e));
+        }
+        Ok(())
+    }
 }
 
 async fn fetch_jsdelivr(path: PathBuf) -> Result<String, types::FetchJSDelivrFailureError> {
