@@ -30,7 +30,7 @@ rocket = { version = "0.5.0-rc.2", features = ["json", "uuid"] }
 serde = { version = "1.0.139", features = ["derive"] }
 sha2 = "0.10.2"
 timeago = "0.3.1"
-tokio = { version = "1.19.2", features = ["full"] }
+tokio = { version = "1.20.0", features = ["full"] }
 tracing = "0.1.35"
 tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3.14", features = ["env-filter"] }
