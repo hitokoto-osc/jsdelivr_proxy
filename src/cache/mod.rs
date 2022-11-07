@@ -19,7 +19,7 @@ struct Cache {
 
 impl Cache {
     pub fn init() -> Result<Self, CreatePoolError> {
-        let cfg = Config::from_url(&CONFIG.redis.to_uri());
+        let cfg = Config::from_url(CONFIG.redis.to_uri());
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
         Ok(Cache { pool })
     }
