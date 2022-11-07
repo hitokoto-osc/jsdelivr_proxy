@@ -5,7 +5,7 @@ use std::{env, process::Command};
 fn main() {
     // Git Information
     let output = Command::new("git")
-        .args(&[
+        .args([
             "show",
             "--pretty=format:'%H,%cn,%cI'",
             "--no-patch",

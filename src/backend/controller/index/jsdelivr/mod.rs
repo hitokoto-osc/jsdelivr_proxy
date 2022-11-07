@@ -1,12 +1,13 @@
 pub mod types;
-use std::error;
-use std::path::{Path, PathBuf};
-
-use deadpool_redis::redis;
+use bytes::Bytes;
+use deadpool_redis::{redis::AsyncCommands, Connection};
 use reqwest::{Client, Url};
-use rocket::{get, serde::json::Value, Responder};
-use serde::{Deserialize, Serialize};
+use rocket::{get, http::ContentType, serde::json::Value, Responder};
 use sha2::{Digest, Sha256};
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 use tracing::{error, instrument};
 
 use crate::utils::response::{fail, fail_with_message, APIResponse};
@@ -15,10 +16,12 @@ use crate::{
     CONFIG,
 };
 
+use self::types::FetchJSDelivrFailureError;
+
 #[derive(Responder)]
 pub enum JSDelivrResponse {
     Json(APIResponse<Value>),
-    Raw(String),
+    Raw((ContentType, Vec<u8>)),
 }
 
 fn convert_url(base: &str, path: PathBuf) -> Result<Url, types::FetchJSDelivrFailureError> {
@@ -43,48 +46,9 @@ fn convert_url(base: &str, path: PathBuf) -> Result<Url, types::FetchJSDelivrFai
     Ok(url)
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct JSDelivrResource<'a> {
-    mime: &'a str,
-    data: &'a [u8],
-}
-
-impl<'a> redis::FromRedisValue for JSDelivrResource<'a> {
-    fn from_redis_value(value: &redis::Value) -> redis::RedisResult<Self> {
-        match value {
-            redis::Value::Data(data) => match bincode::deserialize::<JSDelivrResource>(data) {
-                Ok(v) => Ok(v),
-                Err(e) => Err(redis::RedisError::from((
-                    redis::ErrorKind::ExecAbortError,
-                    "Deserialize Failed",
-                    e.to_string(),
-                ))),
-            },
-            _ => Err(redis::RedisError::from((
-                redis::ErrorKind::TypeError,
-                "Invalid type",
-            ))),
-        }
-    }
-}
-
-impl<'a> redis::ToRedisArgs for JSDelivrResource<'a> {
-    fn write_redis_args<W: std::io::Write>(&self, out: &mut W) -> redis::RedisResult<()> {
-         if let Err(e) = out.write_all(match bincode::serialize(self) {
-            Ok(ref v) => v,
-            Err(e) => return Err(redis::RedisError::from((
-                redis::ErrorKind::ExecAbortError,
-                "Serialize Failed",
-                e.to_string(),
-            )))
-        }) {
-            return Err(redis::RedisError::from(e));
-        }
-        Ok(())
-    }
-}
-
-async fn fetch_jsdelivr(path: PathBuf) -> Result<String, types::FetchJSDelivrFailureError> {
+async fn fetch_jsdelivr(
+    path: PathBuf,
+) -> Result<(String, Bytes), types::FetchJSDelivrFailureError> {
     let client = Client::builder()
         .user_agent(match &(*CONFIG).jsdelivr.user_agent {
             Some(v) => v,
@@ -112,40 +76,56 @@ async fn fetch_jsdelivr(path: PathBuf) -> Result<String, types::FetchJSDelivrFai
             status.as_u16(),
         ));
     }
-    Ok(response.text().await?)
+    // 由于只使用 GET 方法获取 JSDelivr CDN 的资源，因此 Content-Type 应该就是 Mime
+    let mime: String = if let Some(value) = response.headers().get(reqwest::header::CONTENT_TYPE) {
+        value.to_str()?.to_string()
+    } else {
+        "text/plain".to_string()
+    };
+    Ok((mime, response.bytes().await?))
+}
+
+async fn remember_jsdelivr_resource(
+    path: PathBuf,
+) -> Result<(String, Bytes), FetchJSDelivrFailureError> {
+    let key: &[u8] = &Sha256::digest(path.to_string_lossy().to_string().as_bytes());
+    let key: String = base16ct::lower::encode_string(key);
+
+    let conn: &mut Connection = &mut (cache::get_connection().await?);
+    let mime: Option<String> = conn.get(format!("{}_mime", key)).await?;
+    let data: Option<Bytes> = conn.get(format!("{}_data", key)).await?;
+    if let (Some(mime), Some(data)) = (mime, data) {
+        return Ok((mime, data));
+    }
+    let (mime, data) = fetch_jsdelivr(path).await?;
+    // 保存到 Redis
+    conn
+        .set_ex(format!("{}_mime", key), mime.clone(), 60 * 60 * 2)
+        .await?;
+    conn
+        .set_ex(format!("{}_data", key), data.to_vec(), 60 * 60 * 2)
+        .await?;
+    Ok((mime, data))
 }
 
 #[get("/<path..>")]
 #[instrument]
 pub async fn get(path: PathBuf) -> JSDelivrResponse {
-    let key: &[u8] = &Sha256::digest(path.to_string_lossy().to_string().as_bytes());
-    let key: String = base16ct::lower::encode_string(key);
-    let res: Result<String, CacheError<types::FetchJSDelivrFailureError>> = cache::remember(
-        key,
-        || async {
-            match fetch_jsdelivr(path).await {
-                Ok(v) => Ok(v),
-                Err(e) => Err(cache::RememberFuncCallError::from(e)),
-            }
-        },
-        Some(60 * 60 * 2), // 2 hours
-    )
-    .await;
-    match res {
-        Ok(v) => JSDelivrResponse::Raw(v),
+    match remember_jsdelivr_resource(path).await {
+        Ok((mime, data)) => {
+            let content_type = ContentType::from_str(mime.as_str()).unwrap_or(ContentType::Plain);
+            JSDelivrResponse::Raw((content_type, data.to_vec()))
+        }
         Err(ref e) => {
             error!("{:?}", e);
             match e {
-                CacheError::RememberFuncCall(v) => match &v.0 {
-                    types::FetchJSDelivrFailureError::ReqwestOperation(_) => {
-                        JSDelivrResponse::Json(fail_with_message(500, None, e.to_string()))
-                    }
-                    types::FetchJSDelivrFailureError::RequestStatusCheck(status) => {
-                        JSDelivrResponse::Json(fail(*status as i64, None))
-                    }
-                    _ => JSDelivrResponse::Json(fail_with_message(400, None, e.to_string())),
-                },
-                _ => JSDelivrResponse::Json(fail_with_message(500, None, e.to_string())),
+                types::FetchJSDelivrFailureError::ReqwestOperation(_) => {
+                    JSDelivrResponse::Json(fail_with_message(500, None, e.to_string()))
+                }
+                types::FetchJSDelivrFailureError::RequestStatusCheck(status) => {
+                    JSDelivrResponse::Json(fail(*status as i64, None))
+                }
+                _ => JSDelivrResponse::Json(fail_with_message(400, None, e.to_string())),
             }
         }
     }
