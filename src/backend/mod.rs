@@ -18,21 +18,21 @@ fn config_provider() -> rocket::figment::Figment {
         .merge(Env::prefixed("ROCKET_").ignore(&["PROFILE"]).global())
         .merge((
             "port",
-            match &(*CONFIG).server.port {
+            match &CONFIG.server.port {
                 Some(v) => *v,
                 None => 8000,
             },
         ))
         .merge((
             "host",
-            match &(*CONFIG).server.host {
+            match &CONFIG.server.host {
                 Some(v) => v.to_owned(),
                 None => "0.0.0.0".to_string(),
             },
         ))
         .select(Profile::from_env_or(
             "ROCKET_PROFILE",
-            match &(*CONFIG).env {
+            match &CONFIG.env {
                 Environment::Production => Config::RELEASE_PROFILE,
                 _ => Config::DEBUG_PROFILE,
             },

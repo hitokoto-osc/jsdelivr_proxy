@@ -19,7 +19,7 @@ struct Cache {
 
 impl Cache {
     pub fn init() -> Result<Self, CreatePoolError> {
-        let cfg = Config::from_url(&(*CONFIG).redis.to_uri());
+        let cfg = Config::from_url(&CONFIG.redis.to_uri());
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
         Ok(Cache { pool })
     }
@@ -86,6 +86,7 @@ impl<E: error::Error> From<RememberFuncCallError<E>> for CacheError<E> {
     }
 }
 
+#[allow(dead_code)]
 pub async fn remember<'a, T, E, F, Fut, RV>(
     key: T,
     func: F,

@@ -1,8 +1,3 @@
-use crate::cache::CacheError;
-use std::{
-    error,
-    fmt::{self, Formatter},
-};
 use thiserror::Error;
 use url::ParseError;
 

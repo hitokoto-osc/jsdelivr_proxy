@@ -20,7 +20,7 @@ lazy_static! {
 
 #[rocket::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let env = &(*CONFIG).env; // 获取运行环境，同时读取 CONFIG 读取逻辑
+    let env = &CONFIG.env; // 获取运行环境，同时读取 CONFIG 读取逻辑
     info!(
         "You are running {}(v{}) in {} mode.",
         env!("CARGO_PKG_NAME").bright_black(),

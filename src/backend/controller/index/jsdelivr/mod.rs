@@ -12,7 +12,7 @@ use tracing::{error, instrument};
 
 use crate::utils::response::{fail, fail_with_message, APIResponse};
 use crate::{
-    cache::{self, CacheError},
+    cache,
     CONFIG,
 };
 
@@ -21,7 +21,7 @@ use self::types::FetchJSDelivrFailureError;
 #[derive(Responder)]
 pub enum JSDelivrResponse {
     Json(APIResponse<Value>),
-    Raw((ContentType, Vec<u8>)),
+    Raw(Box<(ContentType, Vec<u8>)>),
 }
 
 fn convert_url(base: &str, path: PathBuf) -> Result<Url, types::FetchJSDelivrFailureError> {
@@ -50,12 +50,12 @@ async fn fetch_jsdelivr(
     path: PathBuf,
 ) -> Result<(String, Bytes), types::FetchJSDelivrFailureError> {
     let client = Client::builder()
-        .user_agent(match &(*CONFIG).jsdelivr.user_agent {
+        .user_agent(match &CONFIG.jsdelivr.user_agent {
             Some(v) => v,
             None => concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")),
         })
         .build()?;
-    let mirror = match &(*CONFIG).jsdelivr.mirror {
+    let mirror = match &CONFIG.jsdelivr.mirror {
         Some(v) => v,
         None => "https://cdn.jsdelivr.net",
     };
@@ -63,7 +63,7 @@ async fn fetch_jsdelivr(
         .get(convert_url(mirror, path)?)
         .header(
             "Referer",
-            match &(*CONFIG).jsdelivr.referer {
+            match &CONFIG.jsdelivr.referer {
                 Some(v) => v,
                 None => mirror,
             },
@@ -114,7 +114,7 @@ pub async fn get(path: PathBuf) -> JSDelivrResponse {
     match remember_jsdelivr_resource(path).await {
         Ok((mime, data)) => {
             let content_type = ContentType::from_str(mime.as_str()).unwrap_or(ContentType::Plain);
-            JSDelivrResponse::Raw((content_type, data.to_vec()))
+            JSDelivrResponse::Raw(Box::new((content_type, data.to_vec())))
         }
         Err(ref e) => {
             error!("{:?}", e);
