@@ -26,7 +26,7 @@ config = "0.13.2"
 deadpool-redis = "0.11.0"
 lapin = "2.1.1"
 lazy_static = "1.4.0"
-phf = { version = "0.11.0", features = ["macros"] }
+phf = { version = "0.11.1", features = ["macros"] }
 redis = { version = "0.22", default-features = false, features = ["bytes"] }
 reqwest = { version = "0.11.11", features = ["json"] }
 # rocket = { version = "0.5.0-rc.2", features = ["json", "uuid"] }
