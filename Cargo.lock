@@ -1192,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "jsdelivr_proxy"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base16ct",

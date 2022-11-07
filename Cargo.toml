@@ -1,7 +1,7 @@
 [package]
 name = "jsdelivr_proxy"
 description = "A lightweight JSDelivr Proxy module"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["a632079 <a632079@qq.com>"]
 keywords = ["hitokoto", "jsdelivr", "proxy"]
 license-file = "LICENSE"
