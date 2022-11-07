@@ -1,9 +1,9 @@
-use clap::{AppSettings, Parser};
+use clap::Parser;
 use std::error::Error;
 
 mod version;
 #[derive(Parser, Debug)]
-#[clap(global_setting(AppSettings::NoAutoVersion), author, about, long_about = None)]
+#[clap(author, about, long_about = None)]
 pub struct Args {
     #[clap(short = 'D', long, help = "Run in development mode")]
     pub dev: bool, // 开发模式
