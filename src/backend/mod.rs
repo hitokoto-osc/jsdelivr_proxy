@@ -24,7 +24,7 @@ fn config_provider() -> rocket::figment::Figment {
             },
         ))
         .merge((
-            "host",
+            "address",
             match &CONFIG.server.host {
                 Some(v) => v.to_owned(),
                 None => "0.0.0.0".to_string(),
