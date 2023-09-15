@@ -11,10 +11,7 @@ use std::{
 use tracing::{error, instrument};
 
 use crate::utils::response::{fail, fail_with_message, APIResponse};
-use crate::{
-    cache,
-    CONFIG,
-};
+use crate::{cache, CONFIG};
 
 use self::types::FetchJSDelivrFailureError;
 
@@ -99,11 +96,9 @@ async fn remember_jsdelivr_resource(
     }
     let (mime, data) = fetch_jsdelivr(path).await?;
     // 保存到 Redis
-    conn
-        .set_ex(format!("{}_mime", key), mime.clone(), 60 * 60 * 2)
+    conn.set_ex(format!("{}_mime", key), mime.clone(), 60 * 60 * 2)
         .await?;
-    conn
-        .set_ex(format!("{}_data", key), data.to_vec(), 60 * 60 * 2)
+    conn.set_ex(format!("{}_data", key), data.to_vec(), 60 * 60 * 2)
         .await?;
     Ok((mime, data))
 }

@@ -18,11 +18,16 @@ use rabbitmq::RabbitMQ;
 #[derive(Deserialize)]
 pub struct Config {
     pub env: Environment,
+    #[serde(default)]
     pub database: Database,
+    #[serde(default)]
     pub jsdelivr: Jsdelivr,
+    #[serde(default)]
     pub redis: Redis,
+    #[serde(default)]
     pub rabbitmq: RabbitMQ,
-    pub server: server::Server
+    #[serde(default)]
+    pub server: server::Server,
 }
 
 impl Config {
@@ -38,17 +43,22 @@ impl Config {
             }
         };
         super::logger::init(env == "Development")?; // 初始化 Logger
-        let mut builder = conf::builder()
-            .set_override("env", env)? // 初始化运行环境
-            .add_source(File::with_name("conf/config.toml").required(false))
-            .add_source(File::with_name("config.toml").required(false))
-            .add_source(File::with_name("../conf/config.toml").required(false))
-            .add_source(File::with_name("../config.toml").required(false))
-            .add_source(Env::with_prefix("HITOKOTO_POLL"));
+        let mut builder = conf::builder().set_override("env", env)?; // 初始化运行环境
         builder = if let Some(path) = config_path {
-            builder.add_source(File::with_name(&path))
+            builder.add_source(File::with_name(&path).required(true))
         } else {
             builder
+                .add_source(File::with_name("conf/config").required(false))
+                .add_source(File::with_name("config/config").required(false))
+                .add_source(File::with_name("data/config").required(false))
+                .add_source(File::with_name("config").required(false))
+                .add_source(File::with_name("../conf/config").required(false))
+                .add_source(File::with_name("../config").required(false))
+                .add_source(
+                    Env::with_prefix("JSDRLIVR_PROXY")
+                        .try_parsing(true)
+                        .separator("_"),
+                )
         }; // 交回所有权
         let settings = builder.build()?.try_deserialize::<Self>()?;
         Ok(settings)
