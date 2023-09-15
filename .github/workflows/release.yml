@@ -8,7 +8,7 @@ on:
 jobs:
   create_release :
     if: startsWith(github.ref, 'refs/tags/')
-    name: release ${{ matrix.target }}
+    name: Create Release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -34,7 +34,7 @@ jobs:
           token: ${{ github.token }}
 
   release:
-    name: release
+    name: Build Release
     needs: create_release
     runs-on: ${{ matrix.os }}
     strategy:
@@ -43,15 +43,25 @@ jobs:
           - target: x86_64-apple-darwin
             os: macos-latest
             archive: tar.gz
-          - target: x86_64-pc-windows-gnu
-            os: windows-latest
-            ext: .exe
-            archive: zip
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             ext: .exe
             archive: zip
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            ext: .exe
+            archive: zip
+          - target: i686-pc-windows-msvc
+            os: windows-latest
+            ext: .exe
+            archive: zip
           - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
           - target: x86_64-unknown-linux-musl
@@ -65,6 +75,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Cargo build
         run: |
           rustup toolchain install nightly --profile minimal -t ${{ matrix.target }}
