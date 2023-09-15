@@ -75,7 +75,7 @@ jobs:
       - name: Packaging Archive .zip
         if:  ${{ startsWith(matrix.os, 'windows-latest') }}
         run: |
-          Get-ChildItem -Path .\README.md,.\config.example.toml,.\target\x86_64-pc-windows-msvc\release\ -Filter *.exe |
+          Get-ChildItem -Path .\README.md,.\config.example.toml,.\target\${{ matrix.target }}\release\ -Filter *.exe |
             Compress-Archive -DestinationPath jsdelivr_proxy-${{ matrix.target }}.zip -Force
       - name: Packaging Archive .tar.gz
         if: ${{ !startsWith(matrix.os, 'windows-latest') }}
