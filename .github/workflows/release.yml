@@ -58,6 +58,10 @@ jobs:
             os: ubuntu-latest
             archive: tar.gz
     steps:
+      - name: Install dependencies
+        if: ${{ contains(matrix.target, 'musl') }} && ${{ startsWith(matrix.os, 'ubuntu-latest') }}
+        run: sudo apt-get update && apt-get install -y musl-tools llvm clang
+
       - name: Checkout
         uses: actions/checkout@v4
 
