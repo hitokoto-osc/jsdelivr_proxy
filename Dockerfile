@@ -12,7 +12,7 @@ RUN apk add alpine-conf tzdata && \
 ENV WORKDIR /app
 VOLUME $WORKDIR/data
 ADD config.example.toml $WORKDIR/data/
-COPY --from=builder ./target/x86_64-unknown-linux-musl/release/jsdelivr_proxy $WORKDIR
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/jsdelivr_proxy $WORKDIR/jsdelivr_proxy
 WORKDIR $WORKDIR
 
 CMD ["./jsdelivr_proxy"]
