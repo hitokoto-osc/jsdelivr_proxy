@@ -85,3 +85,50 @@ jobs:
           file: jsdelivr_proxy-${{ matrix.target }}.${{ matrix.archive }}
           asset_name: jsdelivr_proxy-${{ matrix.target }}.${{ matrix.archive }}
   docker-release:
+    name: docker release
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            hitokoto/jsdelivr-proxy
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+          labels: |
+            io.artifacthub.package.readme-url=https://raw.githubusercontent.com/hitokoto-osc/jsdelivr_proxy/master/README.md
+            io.artifacthub.package.logo-url=https://cdn.a632079.me/assets/images/hitokoto-logo-512x512.png
+            io.artifacthub.package.maintainers=[{"name":"a632079","email":"a632079@qq.com"}]
+            io.artifacthub.package.license=Apache-2.0
+            org.opencontainers.image.description=jsdelivr proxy
+            org.opencontainers.image.created=${{ github.event.release.created_at }}
+            org.opencontainers.image.name=jsdelivr-proxy
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version={{version}}
+            org.opencontainers.image.source=https://github.com/hitokoto-osc/jsdelivr_proxy/
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
