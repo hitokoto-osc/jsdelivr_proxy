@@ -28,6 +28,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         format!("{}", env).blue().bold()
     );
 
+    #[allow(clippy::eq_op)]
     if env!("BUILD_PROFILE") == "Debug" {
         // 测试版本警告
         warn!(
