@@ -115,7 +115,7 @@ jobs:
           file: jsdelivr_proxy-${{ matrix.target }}.${{ matrix.archive }}
           asset_name: jsdelivr_proxy-${{ matrix.target }}.${{ matrix.archive }}
   docker-release:
-    name: Release Docker ${matrix.platform}
+    name: Release Docker
     needs: release
     runs-on: ${{ matrix.os }}
     strategy:
