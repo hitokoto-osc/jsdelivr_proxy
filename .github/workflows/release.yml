@@ -88,8 +88,8 @@ jobs:
       - name: Cargo build (musl)
         if: ${{ contains(matrix.target, 'musl') && startsWith(matrix.os, 'ubuntu-latest') }}
         run: |
-          docker buildx build -t builder -f ./manifest/docker/builder/${{ matrix.target }}/Dockerfile .
-          docker run -v "$(pwd)":/home/rust/src --rm -t builder git config --global --add safe.directory '*' && cargo +nightly build --release --target ${{ matrix.target }}
+          docker buildx build -t rust-musl-builder -f ./manifest/docker/builder/${{ matrix.target }}/Dockerfile .
+          docker run -v "$(pwd)":/home/rust/src --rm -t rust-musl-builder git config --global --add safe.directory '*' && cargo +nightly build --release --target ${{ matrix.target }}
 
       - name: Cargo build
         if: ${{ !contains(matrix.target, 'musl') || !startsWith(matrix.os, 'ubuntu-latest') }}
