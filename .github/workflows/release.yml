@@ -115,9 +115,18 @@ jobs:
           file: jsdelivr_proxy-${{ matrix.target }}.${{ matrix.archive }}
           asset_name: jsdelivr_proxy-${{ matrix.target }}.${{ matrix.archive }}
   docker-release:
-    name: docker release
+    name: Release Docker ${matrix.platform}
     needs: release
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux/amd64
+            file: ./manifest/docker/release/x86_64-linux-musl/Dockerfile
+          - os: ubuntu-latest
+            platform: linux/arm64
+            file: ./manifest/docker/release/aarch64-linux-musl/Dockerfile
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -156,17 +165,8 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./manifest/docker/release/x86_64-linux-musl/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./manifest/docker/release/aarch64-linux-musl/Dockerfile
-          platforms: linux/arm64
+          file: ${{ matrix.file }}
+          platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
