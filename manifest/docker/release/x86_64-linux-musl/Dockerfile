@@ -1,5 +1,6 @@
 FROM messense/rust-musl-cross:x86_64-musl as builder
-RUN rustup toolchain install nightly-x86_64-unknown-linux-musl --profile minimal -t x86_64-unknown-linux-musl
+RUN rustup update nightly \
+    rustup target add --toolchain nightly x86_64-unknown-linux-musl
 WORKDIR /app
 COPY . .
 RUN cargo +nightly build --release --target x86_64-unknown-linux-musl
