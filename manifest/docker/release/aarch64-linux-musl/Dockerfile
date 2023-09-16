@@ -1,5 +1,5 @@
 FROM messense/rust-musl-cross:aarch64-musl as builder
-RUN rustup update nightly \
+RUN rustup update nightly && \
     rustup target add --toolchain nightly aarch64-unknown-linux-musl
 WORKDIR /app
 COPY . .
