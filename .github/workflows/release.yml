@@ -50,6 +50,7 @@ jobs:
             os: windows-latest
             ext: .exe
             archive: zip
+# Commented because of Ring is not officially supported on Windows ARM64, Waiting for upstream support.
 #          - target: aarch64-pc-windows-msvc
 #            os: windows-latest
 #            ext: .exe
@@ -68,9 +69,9 @@ jobs:
             os: ubuntu-latest
             archive: tar.gz
     steps:
-      - name: Install dependencies
-        if: ${{ contains(matrix.target, 'musl') && startsWith(matrix.os, 'ubuntu-latest') }}
-        run: sudo apt-get update && sudo apt-get install -y musl-tools llvm clang
+#      - name: Install dependencies
+#        if: ${{ contains(matrix.target, 'musl') && startsWith(matrix.os, 'ubuntu-latest') }}
+#        run: sudo apt-get update && sudo apt-get install -y musl-tools llvm clang
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -84,12 +85,17 @@ jobs:
             ~/.cargo/git/db/
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cargo build (musl)
+        if: ${{ contains(matrix.target, 'musl') && startsWith(matrix.os, 'ubuntu-latest') }}
+        run: |
+          docker buildx build -t builder -f ./manifest/docker/builder/${{ matrix.target }}/Dockerfile .
+          docker run -v "$(pwd)":/home/rust/src --rm -t builder cargo +nightly build --release --target ${{ matrix.target }}
+
       - name: Cargo build
+        if: ${{ !contains(matrix.target, 'musl') || !startsWith(matrix.os, 'ubuntu-latest') }}
         run: |
           rustup toolchain install nightly --profile minimal -t ${{ matrix.target }}
           cargo +nightly build --release --target ${{ matrix.target }}
-        env:
-          RUSTFLAGS: -C strip=symbols
 
       - name: Packaging Archive .zip
         if:  ${{ startsWith(matrix.os, 'windows-latest') }}
