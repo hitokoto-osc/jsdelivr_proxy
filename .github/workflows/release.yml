@@ -142,7 +142,6 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version={{version}}
             org.opencontainers.image.source=https://github.com/hitokoto-osc/jsdelivr_proxy/
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
@@ -158,6 +157,15 @@ jobs:
           context: .
           file: ./manifest/docker/release/x86_64-linux-musl/Dockerfile
           platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./manifest/docker/release/aarch64-linux-musl/Dockerfile
+          platforms: linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
