@@ -1,8 +1,8 @@
 FROM clux/muslrust:stable as builder
-RUN rustup update nightly
+RUN rustup toolchain install nightly --profile minimal -t x86_64-unknown-linux-musl
 WORKDIR /app
 COPY . .
-RUN cargo build +nightly --release --target x86_64-unknown-linux-musl
+RUN cargo +nightly build --release --target x86_64-unknown-linux-musl
 
 FROM alpine:3.18
 ENV TZ Asia/Shanghai
