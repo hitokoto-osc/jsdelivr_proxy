@@ -1,4 +1,6 @@
 FROM clux/muslrust:stable as builder
+RUN rustup update nightly && \
+    rustup target add --toolchain nightly x86_64-unknown-linux-musl
 WORKDIR /app
 COPY . .
 RUN cargo build --release --target x86_64-unknown-linux-musl
@@ -11,7 +13,7 @@ RUN apk add alpine-conf tzdata && \
 
 ENV WORKDIR /app
 VOLUME $WORKDIR/data
-ADD config.example.toml $WORKDIR/data/
+ADD ./config.example.toml $WORKDIR/data/
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/jsdelivr_proxy $WORKDIR/jsdelivr_proxy
 WORKDIR $WORKDIR
 
