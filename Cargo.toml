@@ -40,6 +40,6 @@ tracing = "0.1.37"
 tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 url = "2.3.1"
-uuid = { version = "1.2.1", features = ["v1", "v4"] }
+uuid = { version = "1.8.0", features = ["v1", "v4"] }
 openssl = { version = "0.10", features = ["vendored"] }
 
