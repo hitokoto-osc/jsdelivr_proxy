@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: manifest/docker/release/x86_64-linux-musl/Dockerfile
+      args:
+        # 国内服务器构建加速（rustup/crates 走 rsproxy 镜像）；海外服务器可删除这两行
+        USE_RSPROXY: "1"
     # arm64 机器改用: manifest/docker/release/aarch64-linux-musl/Dockerfile
     restart: unless-stopped
     ports:
