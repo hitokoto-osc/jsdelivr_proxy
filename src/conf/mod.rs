@@ -3,29 +3,21 @@ use std::error::Error;
 use config::{Config as conf, Environment as Env, File};
 use serde::Deserialize;
 
-pub mod database;
 pub mod env;
 pub mod jsdelivr;
-pub mod rabbitmq;
 pub mod redis;
 pub mod server;
 use self::redis::Redis;
-use database::Database;
 use env::Environment;
 use jsdelivr::Jsdelivr;
-use rabbitmq::RabbitMQ;
 
 #[derive(Deserialize)]
 pub struct Config {
     pub env: Environment,
     #[serde(default)]
-    pub database: Database,
-    #[serde(default)]
     pub jsdelivr: Jsdelivr,
     #[serde(default)]
     pub redis: Redis,
-    #[serde(default)]
-    pub rabbitmq: RabbitMQ,
     #[serde(default)]
     pub server: server::Server,
 }

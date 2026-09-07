@@ -54,7 +54,7 @@ async fn fetch_jsdelivr(
         .build()?;
     let mirror = match &CONFIG.jsdelivr.mirror {
         Some(v) => v,
-        None => "https://cdn.jsdelivr.net",
+        None => "https://gcore.jsdelivr.net",
     };
     let response = client
         .get(convert_url(mirror, path)?)
@@ -96,9 +96,11 @@ async fn remember_jsdelivr_resource(
     }
     let (mime, data) = fetch_jsdelivr(path).await?;
     // 保存到 Redis
-    conn.set_ex(format!("{}_mime", key), mime.clone(), 60 * 60 * 2)
+    let _: () = conn
+        .set_ex(format!("{}_mime", key), mime.clone(), 60 * 60 * 2)
         .await?;
-    conn.set_ex(format!("{}_data", key), data.to_vec(), 60 * 60 * 2)
+    let _: () = conn
+        .set_ex(format!("{}_data", key), data.to_vec(), 60 * 60 * 2)
         .await?;
     Ok((mime, data))
 }

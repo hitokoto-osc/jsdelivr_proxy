@@ -24,13 +24,11 @@ clap = { version = "4.0.20", features = ["derive", "env"] }
 colored = "2.0.0"
 config = "0.13.2"
 deadpool-redis = "0.11.0"
-lapin = "2.1.1"
 lazy_static = "1.4.0"
 phf = { version = "0.11.1", features = ["macros"] }
 redis = { version = "0.22", default-features = false, features = ["bytes"] }
 reqwest = { version = "0.11.12", features = ["json"] }
-# rocket = { version = "0.5.0-rc.2", features = ["json", "uuid"] }
-rocket = { git = "https://github.com/SergioBenitez/Rocket.git", branch = "master", features = ["json", "uuid"] }
+rocket = { version = "=0.5.0-rc.3", features = ["json", "uuid"] }
 serde = { version = "1.0.147", features = ["derive"] }
 sha2 = "0.10.6"
 thiserror = "1.0.37"
@@ -41,5 +39,8 @@ tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 url = "2.3.1"
 uuid = { version = "1.2.1", features = ["v1", "v4"] }
+
+# 仅 Linux（musl 静态构建）需要 vendored OpenSSL；Windows/macOS 分别走 schannel / Security Framework
+[target.'cfg(target_os = "linux")'.dependencies]
 openssl = { version = "0.10", features = ["vendored"] }
 

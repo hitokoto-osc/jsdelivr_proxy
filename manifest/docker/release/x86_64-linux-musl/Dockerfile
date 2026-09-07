@@ -1,5 +1,13 @@
 FROM messense/rust-musl-cross:x86_64-musl as builder
-RUN rustup update nightly && \
+# 国内网络环境构建时传入 --build-arg USE_RSPROXY=1，使用 rsproxy 镜像加速 rustup/crates
+ARG USE_RSPROXY=""
+RUN if [ -n "$USE_RSPROXY" ]; then \
+        printf '[source.crates-io]\nreplace-with = "rsproxy-sparse"\n\n[source.rsproxy-sparse]\nregistry = "sparse+https://rsproxy.cn/index/"\n' > ${CARGO_HOME:-$HOME/.cargo}/config.toml; \
+    fi
+RUN if [ -n "$USE_RSPROXY" ]; then \
+        export RUSTUP_DIST_SERVER="https://rsproxy.cn" RUSTUP_UPDATE_ROOT="https://rsproxy.cn/rustup"; \
+    fi && \
+    rustup update nightly && \
     rustup target add --toolchain nightly x86_64-unknown-linux-musl
 WORKDIR /app
 COPY . .

@@ -1,5 +1,5 @@
 [jsdelivr]
-mirror = "https://jsdelivr-fetcher.a632079.workers.dev/"
+mirror = "https://gcore.jsdelivr.net"
 user_agent = ""
 host = ""
 
@@ -7,24 +7,8 @@ host = ""
 host = "0.0.0.0"
 port = "8000"
 
-[database]
-host = "127.0.0.1"
-port = 3306
-user = "root"
-password = "root"
-database = ""
-charset = "utf8"
-prefix = ""
-
 [redis]
 host = "127.0.0.1"
 port = 6379
 password = ""
 database = 0
-
-[rabbitmq]
-host = "127.0.0.1"
-port = 5672
-user = "guest"
-password = "guest"
-vhost = "/"
