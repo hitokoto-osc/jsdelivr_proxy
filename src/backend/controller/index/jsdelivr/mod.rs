@@ -96,9 +96,11 @@ async fn remember_jsdelivr_resource(
     }
     let (mime, data) = fetch_jsdelivr(path).await?;
     // 保存到 Redis
-    conn.set_ex(format!("{}_mime", key), mime.clone(), 60 * 60 * 2)
+    let _: () = conn
+        .set_ex(format!("{}_mime", key), mime.clone(), 60 * 60 * 2)
         .await?;
-    conn.set_ex(format!("{}_data", key), data.to_vec(), 60 * 60 * 2)
+    let _: () = conn
+        .set_ex(format!("{}_data", key), data.to_vec(), 60 * 60 * 2)
         .await?;
     Ok((mime, data))
 }
