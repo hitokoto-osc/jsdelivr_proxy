@@ -54,7 +54,7 @@ async fn fetch_jsdelivr(
         .build()?;
     let mirror = match &CONFIG.jsdelivr.mirror {
         Some(v) => v,
-        None => "https://cdn.jsdelivr.net",
+        None => "https://gcore.jsdelivr.net",
     };
     let response = client
         .get(convert_url(mirror, path)?)
