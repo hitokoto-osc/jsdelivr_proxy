@@ -8,8 +8,11 @@ host = "0.0.0.0"
 # 默认 28319；docker-compose 通过 JSDRLIVR_PROXY_SERVER_PORT 覆盖为 8000
 port = 28319
 
-[redis]
-host = "127.0.0.1"
-port = 6379
-password = ""
-database = 0
+# 进程内缓存（moka）：无外部依赖，重启即失效
+[cache]
+# 缓存存活时间（秒），默认 7200（2 小时）
+ttl_secs = 7200
+# 缓存总字节预算（MB），默认 256
+max_capacity_mb = 256
+# 单条目字节上限（MB），超过此大小的资源仍会正常返回，只是不进入缓存，默认 16
+max_entry_size_mb = 16

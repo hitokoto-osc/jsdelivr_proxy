@@ -1,13 +1,13 @@
 use std::error::Error;
 
-use config::{Config as conf, Environment as Env, File};
+use config::{Config as conf, Environment as Env, File, Map};
 use serde::Deserialize;
 
+pub mod cache;
 pub mod env;
 pub mod jsdelivr;
-pub mod redis;
 pub mod server;
-use self::redis::Redis;
+use cache::Cache;
 use env::Environment;
 use jsdelivr::Jsdelivr;
 
@@ -15,9 +15,9 @@ use jsdelivr::Jsdelivr;
 pub struct Config {
     pub env: Environment,
     #[serde(default)]
-    pub jsdelivr: Jsdelivr,
+    pub cache: Cache,
     #[serde(default)]
-    pub redis: Redis,
+    pub jsdelivr: Jsdelivr,
     #[serde(default)]
     pub server: server::Server,
 }
@@ -39,6 +39,18 @@ impl Config {
         builder = if let Some(path) = config_path {
             builder.add_source(File::with_name(&path).required(true))
         } else {
+            // 环境变量覆盖分两路：
+            //
+            // * 单下划线分隔层级，兼容历史用法（`JSDRLIVR_PROXY_SERVER_PORT`
+            //   => `server.port`）；
+            // * 双下划线分隔层级，用于字段名自身含下划线的配置项
+            //   （`JSDRLIVR_PROXY_CACHE__TTL_SECS` => `cache.ttl_secs`）。
+            //   只用单下划线的话 `TTL_SECS` 会被拆成 `ttl.secs` 两层而静默失效。
+            //
+            // 两个 source 各自只看自己那一半环境变量，避免同一个变量被两种
+            // 规则重复解析。
+            let (nested, flat): (Map<String, String>, Map<String, String>) =
+                std::env::vars().partition(|(key, _)| key.contains("__"));
             builder
                 .add_source(File::with_name("conf/config").required(false))
                 .add_source(File::with_name("config/config").required(false))
@@ -49,7 +61,15 @@ impl Config {
                 .add_source(
                     Env::with_prefix("JSDRLIVR_PROXY")
                         .try_parsing(true)
-                        .separator("_"),
+                        .separator("_")
+                        .source(Some(flat)),
+                )
+                .add_source(
+                    Env::with_prefix("JSDRLIVR_PROXY")
+                        .try_parsing(true)
+                        .prefix_separator("_")
+                        .separator("__")
+                        .source(Some(nested)),
                 )
         }; // 交回所有权
         let settings = builder.build()?.try_deserialize::<Self>()?;
