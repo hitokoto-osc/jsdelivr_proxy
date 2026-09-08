@@ -5,15 +5,15 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
-use deadpool_redis::{redis::AsyncCommands, Connection};
 use reqwest::{Client, Url};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tracing::{error, instrument};
 
+use crate::cache::{self, CachedResource};
 use crate::utils::response::{fail, fail_with_message, APIResponse};
-use crate::{cache, CONFIG};
+use crate::CONFIG;
 
 use self::types::FetchJSDelivrFailureError;
 
@@ -22,7 +22,7 @@ const FALLBACK_CONTENT_TYPE: HeaderValue = HeaderValue::from_static("text/plain;
 
 pub enum JSDelivrResponse {
     Json(APIResponse<Value>),
-    Raw(Box<(HeaderValue, Vec<u8>)>),
+    Raw(Box<(HeaderValue, Bytes)>),
 }
 
 impl IntoResponse for JSDelivrResponse {
@@ -127,27 +127,22 @@ async fn fetch_jsdelivr(
     Ok((mime, response.bytes().await?))
 }
 
+/// 读缓存；未命中时回源 jsDelivr 并写入缓存。
+///
+/// 缓存键直接使用请求路径：进程内缓存不与任何其他业务共享 keyspace，
+/// 不再需要 Redis 时代用 SHA-256 摘要来规避键名冲突与非法字符，
+/// 省掉一次逐请求的哈希计算；键自身的字节数已计入缓存容量核算。
+///
+/// 错误由 moka 以 `Arc` 返回（同一键上被合并的并发请求共享同一个错误对象）。
 async fn remember_jsdelivr_resource(
     path: PathBuf,
-) -> Result<(String, Bytes), FetchJSDelivrFailureError> {
-    let key: &[u8] = &Sha256::digest(path.to_string_lossy().to_string().as_bytes());
-    let key: String = base16ct::lower::encode_string(key);
-
-    let conn: &mut Connection = &mut (cache::get_connection().await?);
-    let mime: Option<String> = conn.get(format!("{}_mime", key)).await?;
-    let data: Option<Bytes> = conn.get(format!("{}_data", key)).await?;
-    if let (Some(mime), Some(data)) = (mime, data) {
-        return Ok((mime, data));
-    }
-    let (mime, data) = fetch_jsdelivr(path).await?;
-    // 保存到 Redis
-    let _: () = conn
-        .set_ex(format!("{}_mime", key), mime.clone(), 60 * 60 * 2)
-        .await?;
-    let _: () = conn
-        .set_ex(format!("{}_data", key), data.to_vec(), 60 * 60 * 2)
-        .await?;
-    Ok((mime, data))
+) -> Result<CachedResource, Arc<FetchJSDelivrFailureError>> {
+    let key = path.to_string_lossy().into_owned();
+    cache::get_or_fetch(key, async move {
+        let (mime, data) = fetch_jsdelivr(path).await?;
+        Ok::<_, FetchJSDelivrFailureError>(CachedResource { mime, data })
+    })
+    .await
 }
 
 #[instrument]
@@ -158,14 +153,14 @@ pub async fn get(PathParam(path): PathParam<String>) -> JSDelivrResponse {
     }
 
     match remember_jsdelivr_resource(PathBuf::from(path)).await {
-        Ok((mime, data)) => {
+        Ok(resource) => {
             let content_type =
-                HeaderValue::from_str(mime.as_str()).unwrap_or(FALLBACK_CONTENT_TYPE);
-            JSDelivrResponse::Raw(Box::new((content_type, data.to_vec())))
+                HeaderValue::from_str(resource.mime.as_str()).unwrap_or(FALLBACK_CONTENT_TYPE);
+            JSDelivrResponse::Raw(Box::new((content_type, resource.data)))
         }
-        Err(ref e) => {
+        Err(e) => {
             error!("{:?}", e);
-            match e {
+            match e.as_ref() {
                 types::FetchJSDelivrFailureError::ReqwestOperation(_) => {
                     JSDelivrResponse::Json(fail_with_message(500, None, e.to_string()))
                 }

@@ -15,22 +15,12 @@ services:
       # 配置支持环境变量覆盖，前缀为 JSDRLIVR_PROXY_（源码里的拼写）
       JSDRLIVR_PROXY_SERVER_HOST: 0.0.0.0
       JSDRLIVR_PROXY_SERVER_PORT: 8000
-      JSDRLIVR_PROXY_REDIS_HOST: redis
       # 自定义上游镜像（默认 https://gcore.jsdelivr.net）：
       # JSDRLIVR_PROXY_JSDELIVR_MIRROR: https://gcore.jsdelivr.net
-    depends_on:
-      - redis
+      # 进程内缓存（字段名含下划线，层级用双下划线分隔）：
+      # JSDRLIVR_PROXY_CACHE__TTL_SECS: 7200          # 缓存 TTL，默认 2 小时
+      # JSDRLIVR_PROXY_CACHE__MAX_CAPACITY_MB: 256    # 缓存总字节预算，默认 256MB
+      # JSDRLIVR_PROXY_CACHE__MAX_ENTRY_SIZE_MB: 16   # 单条目上限，超过则不缓存，默认 16MB
     # 如需配置文件方式，改为挂载 ./data 并在其中放 config.toml：
     # volumes:
     #   - ./data:/app/data
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    # 缓存内容（mime + 文件字节，TTL 2h），无需持久化；如需重启保留可开启 AOF：
-    # command: redis-server --appendonly yes
-    # volumes:
-    #   - redis-data:/data
-
-# volumes:
-#   redis-data:

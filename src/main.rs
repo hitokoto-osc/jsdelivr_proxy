@@ -26,6 +26,11 @@ async fn main() -> anyhow::Result<()> {
         format!("{}", env).blue().bold()
     );
 
+    info!(
+        "Cache: in-process, ttl={}s, capacity={}MB, max entry={}MB (no external dependency)",
+        CONFIG.cache.ttl_secs, CONFIG.cache.max_capacity_mb, CONFIG.cache.max_entry_size_mb
+    );
+
     #[allow(clippy::eq_op)]
     if env!("BUILD_PROFILE") == "Debug" {
         // 测试版本警告

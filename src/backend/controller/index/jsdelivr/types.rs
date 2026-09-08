@@ -16,10 +16,6 @@ pub enum FetchJSDelivrFailureError {
     RequestStatusCheck(u16),
     #[error("RequestContentTypeConvert: {0}")]
     RequestContentTypeConvert(#[from] reqwest::header::ToStrError),
-    #[error("CacheError::Pool: {0}")]
-    RedisPool(#[from] deadpool_redis::PoolError),
-    #[error("CacheError::Redis: {0}")]
-    Redis(#[from] deadpool_redis::redis::RedisError),
 }
 
 /*
