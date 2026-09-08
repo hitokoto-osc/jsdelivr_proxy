@@ -5,6 +5,10 @@ on:
     tags:
       - v[0-9]+.[0-9]+.[0-9]+
 
+env:
+  DOCKERHUB_IMAGE: hitokoto/jsdelivr-proxy
+  GHCR_IMAGE: ghcr.io/${{ github.repository }}
+
 jobs:
   create_release :
     if: startsWith(github.ref, 'refs/tags/')
@@ -115,7 +119,10 @@ jobs:
           file: jsdelivr_proxy-${{ matrix.target }}.${{ matrix.archive }}
           asset_name: jsdelivr_proxy-${{ matrix.target }}.${{ matrix.archive }}
   docker-release:
-    name: Release Docker
+    # 每个平台只按 digest 推送（不打 tag），tag 统一由 docker-manifest job 合并后再打。
+    # 如果这里直接用 meta.outputs.tags 推送，两条 matrix 分支会推出完全相同的 tag，
+    # 后完成的那条会覆盖先完成的，最终 tag 上只剩单一架构的镜像。
+    name: Build Docker (${{ matrix.platform }})
     needs: release
     runs-on: ${{ matrix.os }}
     permissions:
@@ -123,6 +130,7 @@ jobs:
       # 推送镜像到 GitHub Packages(ghcr.io) 需要，GITHUB_TOKEN 默认没有这个权限
       packages: write
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -134,6 +142,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Normalize platform name
+        run: |
+          platform="${{ matrix.platform }}"
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
@@ -143,20 +155,14 @@ jobs:
           # 且 GitHub 会依据下面的 org.opencontainers.image.source 标签把
           # 该 package 自动关联到本仓库。
           images: |
-            hitokoto/jsdelivr-proxy
-            ghcr.io/${{ github.repository }}
-          tags: |
-            type=ref,event=tag
-            type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
-            type=semver,pattern=v{{major}}
+            ${{ env.DOCKERHUB_IMAGE }}
+            ${{ env.GHCR_IMAGE }}
           labels: |
             io.artifacthub.package.readme-url=https://raw.githubusercontent.com/hitokoto-osc/jsdelivr_proxy/master/README.md
             io.artifacthub.package.logo-url=https://cdn.a632079.me/assets/images/hitokoto-logo-512x512.png
             io.artifacthub.package.maintainers=[{"name":"a632079","email":"a632079@qq.com"}]
             io.artifacthub.package.license=Apache-2.0
             org.opencontainers.image.description=jsdelivr proxy
-            org.opencontainers.image.created=${{ github.event.release.created_at }}
             org.opencontainers.image.name=jsdelivr-proxy
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version={{version}}
@@ -176,12 +182,75 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ${{ matrix.file }}
           platforms: ${{ matrix.platform }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,"name=${{ env.DOCKERHUB_IMAGE }},${{ env.GHCR_IMAGE }}",push-by-digest=true,name-canonical=true,push=true
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-manifest:
+    # 把各平台的 digest 合并成一个 manifest list，再打上真正的 tag。
+    name: Push Docker manifest
+    needs: docker-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.DOCKERHUB_IMAGE }}
+            ${{ env.GHCR_IMAGE }}
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Login to GitHub Packages
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.target."docker-metadata-action".tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.DOCKERHUB_IMAGE }}@sha256:%s ' *)
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect "${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.version }}"
+          docker buildx imagetools inspect "${{ env.GHCR_IMAGE }}:${{ steps.meta.outputs.version }}"

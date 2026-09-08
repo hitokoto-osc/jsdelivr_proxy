@@ -87,6 +87,21 @@ JSDRLIVR_PROXY_JSDELIVR_ALLOWLIST_NPM="vue,@hitokoto" ./jsdelivr_proxy
 
 ## Docker 部署
 
+### 预构建镜像
+
+每次打 tag 发布时，同一份构建会同时推送到 Docker Hub 与 GitHub Packages，
+两边内容完全一致（同一个 manifest list，含 `linux/amd64` 与 `linux/arm64`），
+按网络情况任选其一即可：
+
+```bash
+docker pull hitokoto/jsdelivr-proxy:latest              # Docker Hub
+docker pull ghcr.io/hitokoto-osc/jsdelivr_proxy:latest  # GitHub Packages
+```
+
+除 `latest` 外还提供 `vX.Y.Z` / `vX.Y` / `vX` 三级 tag。
+
+### 从源码构建
+
 仓库自带 compose 编排（仅 app 一个服务）：
 
 ```bash
