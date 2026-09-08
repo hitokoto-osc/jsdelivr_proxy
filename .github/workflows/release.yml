@@ -248,7 +248,7 @@ jobs:
         working-directory: /tmp/digests
         run: |
           docker buildx imagetools create \
-            $(jq -cr '.target."docker-metadata-action".tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.DOCKERHUB_IMAGE }}@sha256:%s ' *)
       - name: Inspect image
         run: |
