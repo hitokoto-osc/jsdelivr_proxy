@@ -5,7 +5,8 @@ host = ""
 
 [server]
 host = "0.0.0.0"
-port = "8000"
+# 默认 28319；docker-compose 通过 JSDRLIVR_PROXY_SERVER_PORT 覆盖为 8000
+port = 28319
 
 [redis]
 host = "127.0.0.1"

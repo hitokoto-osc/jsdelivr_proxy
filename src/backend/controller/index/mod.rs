@@ -1,30 +1,24 @@
 pub mod jsdelivr;
 use crate::utils::response::success;
 use crate::utils::response::APIResponse;
+use axum::http::header;
+use axum::response::IntoResponse;
 use chrono::prelude::{DateTime, Utc};
-use rocket::{
-    get,
-    serde::json::{serde_json::json, Value},
-    Responder,
-};
+use serde_json::{json, Value};
 use timeago::Formatter;
 
-#[get("/")]
-pub fn index() -> APIResponse<Value> {
+pub async fn index() -> APIResponse<Value> {
     success(json!([]))
 }
 
-#[derive(Responder)]
-#[response(status = 200, content_type = "image/x-icon")]
-pub struct FaviconResponser<'a>(&'a [u8]);
-
-#[get("/favicon.ico")]
-pub fn favicon() -> FaviconResponser<'static> {
-    FaviconResponser(include_bytes!("../../../../assets/images/favicon.ico"))
+pub async fn favicon() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/x-icon")],
+        include_bytes!("../../../../assets/images/favicon.ico").as_slice(),
+    )
 }
 
-#[get("/about")]
-pub fn about() -> APIResponse<Value> {
+pub async fn about() -> APIResponse<Value> {
     let now = Utc::now();
     let formatter = Formatter::new();
     success(json!({

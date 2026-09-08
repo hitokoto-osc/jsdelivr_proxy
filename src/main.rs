@@ -1,5 +1,3 @@
-use std::error::Error;
-
 use colored::*;
 use tracing::{info, warn};
 mod backend;
@@ -18,8 +16,8 @@ lazy_static! {
     };
 }
 
-#[rocket::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let env = &CONFIG.env; // 获取运行环境，同时读取 CONFIG 读取逻辑
     info!(
         "You are running {}(v{}) in {} mode.",
@@ -41,6 +39,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
     }
     info!("Starting HTTP Server...");
-    backend::init().await?; // 启动 Rocket Web Server
+    backend::init().await?; // 启动 axum Web Server
     Ok(())
 }

@@ -8,6 +8,8 @@ pub enum FetchJSDelivrFailureError {
     Parse(#[from] ParseError),
     #[error("Failed to fetch from JSDelivr")]
     PathCovert,
+    #[error("InvalidPath: the requested path is not allowed")]
+    InvalidPath,
     #[error("ReqwestOperation failed: {0}")]
     ReqwestOperation(#[from] reqwest::Error),
     #[error("RequestStatusCheck failed: {0}")]
