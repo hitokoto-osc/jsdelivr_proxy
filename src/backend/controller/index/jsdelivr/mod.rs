@@ -1,3 +1,4 @@
+pub mod allowlist;
 pub mod types;
 use axum::{
     extract::Path as PathParam,
@@ -9,7 +10,7 @@ use reqwest::{Client, Url};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{error, instrument};
+use tracing::{error, instrument, warn};
 
 use crate::cache::{self, CachedResource};
 use crate::utils::response::{fail, fail_with_message, APIResponse};
@@ -150,6 +151,13 @@ pub async fn get(PathParam(path): PathParam<String>) -> JSDelivrResponse {
     if let Err(e) = validate_path(&path) {
         error!("{:?}", e);
         return JSDelivrResponse::Json(fail_with_message(400, None, e.to_string()));
+    }
+
+    // 白名单校验必须发生在读缓存与回源之前：被拒绝的请求不应该消耗任何上游流量，
+    // 也不应该在缓存里留下条目。
+    if let Err(e) = allowlist::check(&CONFIG.jsdelivr.allowlist, &path) {
+        warn!("allowlist denied path {:?}: {}", path, e);
+        return JSDelivrResponse::Json(fail_with_message(403, None, e.to_string()));
     }
 
     match remember_jsdelivr_resource(PathBuf::from(path)).await {

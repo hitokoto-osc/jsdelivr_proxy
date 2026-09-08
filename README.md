@@ -24,6 +24,67 @@ HTTP 层基于 [axum](https://github.com/tokio-rs/axum) 0.8 + tower-http，
 如果确实需要跨副本共享缓存，建议在本服务前面再放一层 CDN / 反代缓存，
 而不是让服务本身重新背上一个有状态依赖。
 
+## 资源白名单（反滥用）
+
+公网部署时，一个不设限的 jsDelivr 反代等于一台**任何人都能白嫖的开放代理**：
+别人只要把域名换成你的，就能用你的带宽和 IP 分发任意 jsDelivr 资源。
+白名单让运维方把代理**钉死在自己的包 / 仓库上**。
+
+**默认不限制**：不写 `[jsdelivr.allowlist]`（或三个列表全为空）时行为与之前完全一致，
+老部署升级上来不受任何影响。只要任意一个列表非空，白名单即生效，
+未命中的请求在**读缓存与回源之前**就被拒绝（返回 403，不产生上游流量，也不会污染缓存），
+并以 `warn!` 记录被拒绝的路径。
+
+```toml
+[jsdelivr.allowlist]
+# 允许的 provider；留空 = 不限制 provider
+providers = ["npm", "gh"]
+# 允许的 npm 包；留空 = 该 provider 下所有包都允许
+npm = ["vue", "@hitokoto/core", "@hitokoto"]
+# 允许的 GitHub 仓库；留空 = 该 provider 下所有仓库都允许
+gh  = ["hitokoto-osc", "hitokoto-osc/sentences-bundle"]
+```
+
+匹配规则：
+
+| 配置项 | 条目形式 | 含义 |
+| --- | --- | --- |
+| `providers` | `npm` | 放行该 provider |
+| `npm` | `vue` | 精确匹配包名 |
+| `npm` | `@hitokoto/core` | 精确匹配 scoped 包 |
+| `npm` | `@hitokoto` | 匹配该 scope 下的所有包 |
+| `gh` | `hitokoto-osc` | 匹配该 owner 的全部仓库 |
+| `gh` | `hitokoto-osc/sentences-bundle` | 精确匹配单个仓库 |
+
+几个必须知道的细节：
+
+* **版本号先剥离再匹配**：`npm/vue@3.5.0/dist/vue.js` 按 `vue` 判定；
+  scoped 包的 `@scope` 是独立片段，`@scope/pkg@1.2.3` 能被正确拆开。
+* **`combine/` 会被拆开逐个校验**。`/combine/npm/a@1/x.js,npm/b@2/y.js`
+  在一次请求里打包多个资源，只校验最外层路径等于给整个白名单开后门；
+  本实现按 `,` 拆分后对**每一个分量**套用完整规则，任意一个不通过就整体 403。
+* **匹配不区分大小写**（GitHub 的 owner/repo 大小写不敏感），
+  且**严格按片段整体比较**：`hitokoto-osc` 不会匹配 `hitokoto-osc-evil`，
+  `@hitokoto` 也不会匹配 `@hitokoto-evil`——前缀匹配是白名单最经典的绕过方式。
+* **无法按资源粒度识别的 provider**（`wp`、`esm` 等）在白名单生效时，
+  必须显式写进 `providers` 才会放行；无法解析的路径一律拒绝。
+
+对应的环境变量（列表用**逗号**分隔）：
+
+| 配置文件（`[jsdelivr.allowlist]`） | 环境变量 |
+| --- | --- |
+| `providers` | `JSDRLIVR_PROXY_JSDELIVR_ALLOWLIST_PROVIDERS` |
+| `npm` | `JSDRLIVR_PROXY_JSDELIVR_ALLOWLIST_NPM` |
+| `gh` | `JSDRLIVR_PROXY_JSDELIVR_ALLOWLIST_GH` |
+
+```bash
+JSDRLIVR_PROXY_JSDELIVR_ALLOWLIST_PROVIDERS="npm,gh" \
+JSDRLIVR_PROXY_JSDELIVR_ALLOWLIST_NPM="vue,@hitokoto" ./jsdelivr_proxy
+```
+
+> 环境变量方式仅在**不使用 `-c <配置文件>`** 时生效（`-c` 会关掉环境变量 source，
+> 这是既有行为）。列表键的逗号拆分在 `src/conf/mod.rs` 的 `LIST_VALUED_KEYS` 中登记。
+
 ## Docker 部署
 
 仓库自带 compose 编排（仅 app 一个服务）：
