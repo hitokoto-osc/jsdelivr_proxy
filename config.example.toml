@@ -16,3 +16,24 @@ ttl_secs = 7200
 max_capacity_mb = 256
 # 单条目字节上限（MB），超过此大小的资源仍会正常返回，只是不进入缓存，默认 16
 max_entry_size_mb = 16
+
+# 资源白名单（反滥用）：把本代理限制在自家的包 / 仓库上，避免被当成公共开放代理白嫖流量。
+# 三个列表**全部为空 / 整节缺省 = 不做任何限制**（默认行为）。
+# 只要任意一个列表非空，白名单即生效，未命中的请求返回 403。
+# 匹配不区分大小写，且严格按片段整体比较：
+#   `hitokoto-osc` 不会匹配 `hitokoto-osc-evil`，`@hitokoto` 也不会匹配 `@hitokoto-evil`。
+# [jsdelivr.allowlist]
+# 允许的 provider；留空 = 不限制 provider。
+# 注意 npm / gh 以外的 provider（wp、esm 等）无法按资源粒度识别，
+# 白名单生效时必须在这里显式列出才会放行。
+# combine/ 请求会被拆开逐个校验其分量，无需（也不应该）写进这里。
+# providers = ["npm", "gh"]
+# 允许的 npm 包；留空 = 该 provider 下的所有包都允许。
+#   "vue"            精确匹配包名
+#   "@hitokoto/core" 精确匹配 scoped 包
+#   "@hitokoto"      匹配该 scope 下的所有包
+# npm = ["vue", "@hitokoto/core", "@hitokoto"]
+# 允许的 GitHub 仓库；留空 = 该 provider 下的所有仓库都允许。
+#   "hitokoto-osc"                  匹配该 owner 的全部仓库
+#   "hitokoto-osc/sentences-bundle" 精确匹配单个仓库
+# gh = ["hitokoto-osc", "hitokoto-osc/sentences-bundle"]
