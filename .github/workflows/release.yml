@@ -118,6 +118,10 @@ jobs:
     name: Release Docker
     needs: release
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      # 推送镜像到 GitHub Packages(ghcr.io) 需要，GITHUB_TOKEN 默认没有这个权限
+      packages: write
     strategy:
       matrix:
         include:
@@ -134,8 +138,13 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
+          # 同一份构建同时发布到 Docker Hub 与 GitHub Packages(ghcr.io)。
+          # ghcr 的仓库名直接取 github.repository，因此镜像名随仓库自动跟随，
+          # 且 GitHub 会依据下面的 org.opencontainers.image.source 标签把
+          # 该 package 自动关联到本仓库。
           images: |
             hitokoto/jsdelivr-proxy
+            ghcr.io/${{ github.repository }}
           tags: |
             type=ref,event=tag
             type=semver,pattern=v{{version}}
@@ -161,6 +170,12 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Login to GitHub Packages
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
