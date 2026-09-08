@@ -1,13 +1,15 @@
 pub mod types;
+use axum::{
+    extract::Path as PathParam,
+    http::{header, HeaderValue},
+    response::{IntoResponse, Response},
+};
 use bytes::Bytes;
 use deadpool_redis::{redis::AsyncCommands, Connection};
 use reqwest::{Client, Url};
-use rocket::{get, http::ContentType, serde::json::Value, Responder};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{
-    path::{Path, PathBuf},
-    str::FromStr,
-};
+use std::path::{Path, PathBuf};
 use tracing::{error, instrument};
 
 use crate::utils::response::{fail, fail_with_message, APIResponse};
@@ -15,10 +17,53 @@ use crate::{cache, CONFIG};
 
 use self::types::FetchJSDelivrFailureError;
 
-#[derive(Responder)]
+/// Rocket 的 `ContentType::Plain`，作为无法解析上游 Content-Type 时的回落值。
+const FALLBACK_CONTENT_TYPE: HeaderValue = HeaderValue::from_static("text/plain; charset=utf-8");
+
 pub enum JSDelivrResponse {
     Json(APIResponse<Value>),
-    Raw(Box<(ContentType, Vec<u8>)>),
+    Raw(Box<(HeaderValue, Vec<u8>)>),
+}
+
+impl IntoResponse for JSDelivrResponse {
+    fn into_response(self) -> Response {
+        match self {
+            JSDelivrResponse::Json(v) => v.into_response(),
+            JSDelivrResponse::Raw(raw) => {
+                let (content_type, data) = *raw;
+                ([(header::CONTENT_TYPE, content_type)], data).into_response()
+            }
+        }
+    }
+}
+
+/// 校验通配符路由捕获到的路径。
+///
+/// Rocket 的 `PathBuf` 请求守卫会拒绝 `..` 等穿越片段，而 axum 的 `{*path}`
+/// 不做任何过滤，因此这里必须显式实现同等强度的校验：
+///
+/// * 拒绝空路径、空片段（`//`、结尾 `/`）；
+/// * 拒绝 `.` 与 `..` 片段；
+/// * 拒绝百分号编码残留的 `%2e`（不区分大小写），防止二次编码绕过；
+/// * 拒绝反斜杠与 NUL，避免不同平台下的路径语义差异。
+fn validate_path(path: &str) -> Result<(), FetchJSDelivrFailureError> {
+    if path.is_empty() {
+        return Err(FetchJSDelivrFailureError::InvalidPath);
+    }
+    if path.contains('\\') || path.contains('\0') {
+        return Err(FetchJSDelivrFailureError::InvalidPath);
+    }
+    // axum 已经做过一次百分号解码，若仍残留 %2e 说明客户端做了二次编码
+    let lowered = path.to_ascii_lowercase();
+    if lowered.contains("%2e") || lowered.contains("%2f") || lowered.contains("%5c") {
+        return Err(FetchJSDelivrFailureError::InvalidPath);
+    }
+    for segment in path.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return Err(FetchJSDelivrFailureError::InvalidPath);
+        }
+    }
+    Ok(())
 }
 
 fn convert_url(base: &str, path: PathBuf) -> Result<Url, types::FetchJSDelivrFailureError> {
@@ -105,12 +150,17 @@ async fn remember_jsdelivr_resource(
     Ok((mime, data))
 }
 
-#[get("/<path..>")]
 #[instrument]
-pub async fn get(path: PathBuf) -> JSDelivrResponse {
-    match remember_jsdelivr_resource(path).await {
+pub async fn get(PathParam(path): PathParam<String>) -> JSDelivrResponse {
+    if let Err(e) = validate_path(&path) {
+        error!("{:?}", e);
+        return JSDelivrResponse::Json(fail_with_message(400, None, e.to_string()));
+    }
+
+    match remember_jsdelivr_resource(PathBuf::from(path)).await {
         Ok((mime, data)) => {
-            let content_type = ContentType::from_str(mime.as_str()).unwrap_or(ContentType::Plain);
+            let content_type =
+                HeaderValue::from_str(mime.as_str()).unwrap_or(FALLBACK_CONTENT_TYPE);
             JSDelivrResponse::Raw(Box::new((content_type, data.to_vec())))
         }
         Err(ref e) => {
@@ -125,5 +175,57 @@ pub async fn get(path: PathBuf) -> JSDelivrResponse {
                 _ => JSDelivrResponse::Json(fail_with_message(400, None, e.to_string())),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_normal_jsdelivr_paths() {
+        for path in [
+            "npm/vue@3/dist/vue.global.js",
+            "gh/jquery/jquery@3.6.0/dist/jquery.min.js",
+            "npm/lodash",
+            "npm/@scope/pkg@1.0.0/index.js",
+        ] {
+            assert!(
+                validate_path(path).is_ok(),
+                "expected {} to be accepted",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_path_traversal() {
+        for path in [
+            "..",
+            "../etc/passwd",
+            "npm/../../etc/passwd",
+            "npm/..",
+            "npm/./vue",
+            ".",
+            "npm//vue",
+            "npm/vue/",
+            "",
+            "npm\\..\\etc",
+            "npm/%2e%2e/%2e%2e/etc/passwd",
+            "npm/%2E%2E/etc/passwd",
+            "npm/%2f/etc",
+        ] {
+            assert!(
+                validate_path(path).is_err(),
+                "expected {} to be rejected",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_path_is_reported_as_invalid_path() {
+        let err = validate_path("npm/../../etc/passwd").unwrap_err();
+        assert!(matches!(err, FetchJSDelivrFailureError::InvalidPath));
     }
 }
