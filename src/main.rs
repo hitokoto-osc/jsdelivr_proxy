@@ -5,6 +5,7 @@ mod cache;
 mod command;
 pub mod conf;
 mod logger;
+mod upstream;
 pub mod utils;
 
 #[macro_use]
