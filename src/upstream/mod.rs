@@ -98,6 +98,27 @@ pub async fn fetch_response(path: &str) -> Result<reqwest::Response, UpstreamErr
     Ok(response)
 }
 
+pub async fn fetch_gravatar_response(
+    client: &Client,
+    base: &str,
+    path: &str,
+    query: Option<&str>,
+) -> Result<reqwest::Response, UpstreamError> {
+    let mut url = convert_url(base, path)?;
+    url.set_query(query);
+    let response = client
+        .get(url)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(UpstreamError::RequestStatusCheck(
+            response.status().as_u16(),
+        ));
+    }
+    Ok(response)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -30,6 +30,7 @@ fn router() -> Router {
         .route("/admin/api/cache/purge", post(admin::cache_purge))
         .route("/admin/api/audit", get(admin::audit_list))
         .route("/webhook/cache/purge", post(webhook::purge_cache))
+        .route("/avatar/{hash}", get(index::gravatar::get))
         .route("/{*path}", get(index::jsdelivr::get))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
@@ -93,6 +94,7 @@ mod tests {
             .route("/admin/api/cache/purge", post(|| async { "purge" }))
             .route("/admin/api/audit", get(|| async { "audit" }))
             .route("/webhook/cache/purge", post(|| async { "webhook" }))
+            .route("/avatar/{hash}", get(|| async { "gravatar" }))
             .route("/{*path}", get(|| async { "jsdelivr" }))
     }
 
@@ -108,6 +110,14 @@ mod tests {
             .await
             .unwrap();
         (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    #[tokio::test]
+    async fn avatar_route_wins_over_the_wildcard() {
+        assert_eq!(
+            route("GET", "/avatar/abc.jpg?s=200&d=identicon").await.1,
+            "gravatar"
+        );
     }
 
     #[tokio::test]

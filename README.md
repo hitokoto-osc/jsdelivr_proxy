@@ -8,6 +8,26 @@ A lightweight JSDelivr Proxy with cache.
 HTTP 层基于 [axum](https://github.com/tokio-rs/axum) 0.8 + tower-http，
 缓存基于 [moka](https://github.com/moka-rs/moka) 0.12（`future` 特性）。
 
+## Gravatar 头像代理
+
+请求 `/avatar/<hash>?s=200&d=identicon` 即可代理头像；支持的参数见
+[Gravatar 官方文档](https://docs.gravatar.com/sdk/images/)。
+
+```toml
+[gravatar]
+upstream = "https://www.gravatar.com"
+```
+
+可通过 `JSDRLIVR_PROXY_GRAVATAR_UPSTREAM` 环境变量指定上游。
+上游为基础 URL，可包含路径前缀；请求会在其后追加 `/avatar/<hash>` 并透传查询参数。
+省略配置时使用上面的默认值。
+
+Gravatar 与 jsDelivr 共用 `[cache]` 配置及缓存实例，包括 TTL、容量预算、内容去重、
+压缩、流式返回和并发合并回源；只有成功且完整下载的响应才会缓存。
+头像缓存键为 `avatar/<hash>` 加原始查询字符串，不同尺寸或默认头像参数分别缓存。
+可在现有管理面板查看，或按 `avatar/` 前缀清除所有头像缓存。
+`jsdelivr.allowlist` 和 `jsdelivr.referer_check` 仅作用于 jsDelivr 请求。
+
 ## 缓存
 
 * **TTL 2 小时**：每个 path 独立过期，命中不续期；预加载刷新只续期对应 path。
@@ -121,6 +141,36 @@ JSDRLIVR_PROXY_JSDELIVR_ALLOWLIST_NPM="vue,@hitokoto" ./jsdelivr_proxy
 
 > 环境变量方式仅在**不使用 `-c <配置文件>`** 时生效（`-c` 会关掉环境变量 source，
 > 这是既有行为）。列表键的逗号拆分在 `src/conf/mod.rs` 的 `LIST_VALUED_KEYS` 中登记。
+
+## Referer 校验
+
+可选校验资源请求的来源域名，默认关闭。启用后在读取缓存和回源之前校验，
+不符合规则的请求返回 HTTP 403；管理接口、Webhook、首页和 `/about` 等独立路由不受影响。
+
+```toml
+[jsdelivr.referer_check]
+enabled = true
+allow_empty = false
+domains = ["example.com", "www.example.com"]
+```
+
+`domains` 只填写域名，不带协议、端口、路径或通配符。仅接受 HTTP/HTTPS Referer，
+提取主机名后进行不区分大小写的完整匹配，忽略端口与路径；子域名需要单独列出。
+例如 `example.com` 不会放行 `sub.example.com` 或 `example.com.evil.test`。
+启用校验但域名列表为空时，所有非空 Referer 都会被拒绝。
+
+`allow_empty` 默认 `false`；设置为 `true` 时允许缺少 Referer 头、空字符串或纯空白值，
+但不会放行格式无效、重复或域名不匹配的 Referer。
+启用时响应添加 `Vary: Referer`，让下游缓存按 Referer 区分响应。
+此配置独立于用于回源的 `jsdelivr.referer`。
+
+| 配置文件（`[jsdelivr.referer_check]`） | 环境变量 | 默认值 |
+| --- | --- | --- |
+| `enabled` | `JSDRLIVR_PROXY_JSDELIVR__REFERER_CHECK__ENABLED` | `false` |
+| `allow_empty` | `JSDRLIVR_PROXY_JSDELIVR__REFERER_CHECK__ALLOW_EMPTY` | `false` |
+| `domains` | `JSDRLIVR_PROXY_JSDELIVR__REFERER_CHECK__DOMAINS` | `[]` |
+
+环境变量中的域名用逗号分隔；使用 `-c <配置文件>` 时不读取环境变量配置。
 
 ## 资源预载（Preload）
 

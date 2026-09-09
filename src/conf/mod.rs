@@ -7,8 +7,10 @@ pub mod admin;
 pub mod allowlist;
 pub mod cache;
 pub mod env;
+pub mod gravatar;
 pub mod jsdelivr;
 pub mod preload;
+pub mod referer;
 pub mod server;
 use admin::Admin;
 use cache::Cache;
@@ -22,10 +24,11 @@ use preload::Preload;
 /// 反序列化失败，因此必须逐个登记；`with_list_parse_key` 只对登记过的键启用
 /// 逗号拆分，其余键（如 `jsdelivr.mirror`）仍是普通字符串。
 /// 键名是**前缀剥离、分隔符归一成 `.` 之后**的形式，所以单/双下划线两路都适用。
-const LIST_VALUED_KEYS: [&str; 3] = [
+const LIST_VALUED_KEYS: [&str; 4] = [
     "jsdelivr.allowlist.providers",
     "jsdelivr.allowlist.npm",
     "jsdelivr.allowlist.gh",
+    "jsdelivr.referer_check.domains",
 ];
 
 fn with_list_keys(env: Env) -> Env {
@@ -45,6 +48,8 @@ pub struct Config {
     pub cache: Cache,
     #[serde(default)]
     pub jsdelivr: Jsdelivr,
+    #[serde(default)]
+    pub gravatar: gravatar::Gravatar,
     #[serde(default)]
     pub preload: Preload,
     #[serde(default)]
@@ -102,5 +107,114 @@ impl Config {
         }; // 交回所有权
         let settings = builder.build()?.try_deserialize::<Self>()?;
         Ok(settings)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gravatar_defaults_and_upstream_options_are_deserialized() {
+        for (input, expected) in [
+            ("", "https://www.gravatar.com"),
+            ("[gravatar]", "https://www.gravatar.com"),
+            (
+                "[gravatar]\nupstream = 'https://example.com/mirror'",
+                "https://example.com/mirror",
+            ),
+        ] {
+            let settings: Config = conf::builder()
+                .set_override("env", "Testing")
+                .unwrap()
+                .add_source(File::from_str(input, config::FileFormat::Toml))
+                .build()
+                .unwrap()
+                .try_deserialize()
+                .unwrap();
+            assert_eq!(settings.gravatar.upstream, expected);
+        }
+        for separator in ["_", "__"] {
+            let source = Map::from([(
+                format!("JSDRLIVR_PROXY_GRAVATAR{separator}UPSTREAM"),
+                "https://example.com".into(),
+            )]);
+            let settings: Config = conf::builder()
+                .set_override("env", "Testing")
+                .unwrap()
+                .add_source(
+                    Env::with_prefix("JSDRLIVR_PROXY")
+                        .prefix_separator("_")
+                        .separator(separator)
+                        .source(Some(source)),
+                )
+                .build()
+                .unwrap()
+                .try_deserialize()
+                .unwrap();
+            assert_eq!(settings.gravatar.upstream, "https://example.com");
+        }
+    }
+
+    #[test]
+    fn referer_check_environment_options_are_deserialized() {
+        let source = Map::from([
+            (
+                "JSDRLIVR_PROXY_JSDELIVR__REFERER_CHECK__ENABLED".into(),
+                "true".into(),
+            ),
+            (
+                "JSDRLIVR_PROXY_JSDELIVR__REFERER_CHECK__ALLOW_EMPTY".into(),
+                "true".into(),
+            ),
+            (
+                "JSDRLIVR_PROXY_JSDELIVR__REFERER_CHECK__DOMAINS".into(),
+                "example.com,www.example.com".into(),
+            ),
+        ]);
+        let settings: Config = conf::builder()
+            .set_override("env", "Testing")
+            .unwrap()
+            .add_source(
+                with_list_keys(
+                    Env::with_prefix("JSDRLIVR_PROXY")
+                        .prefix_separator("_")
+                        .separator("__"),
+                )
+                .source(Some(source)),
+            )
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert!(settings.jsdelivr.referer_check.enabled);
+        assert!(settings.jsdelivr.referer_check.allow_empty);
+        assert_eq!(
+            settings.jsdelivr.referer_check.domains,
+            ["example.com", "www.example.com"]
+        );
+    }
+
+    #[test]
+    fn referer_check_file_options_and_defaults_are_deserialized() {
+        for (input, enabled) in [
+            ("[jsdelivr]", false),
+            (
+                "[jsdelivr.referer_check]\nenabled = true\ndomains = ['example.com']",
+                true,
+            ),
+            (include_str!("../../config.example.toml"), false),
+        ] {
+            let settings: Config = conf::builder()
+                .set_override("env", "Testing")
+                .unwrap()
+                .add_source(File::from_str(input, config::FileFormat::Toml))
+                .build()
+                .unwrap()
+                .try_deserialize()
+                .unwrap();
+            assert_eq!(settings.jsdelivr.referer_check.enabled, enabled);
+            assert!(!settings.jsdelivr.referer_check.allow_empty);
+        }
     }
 }

@@ -46,7 +46,7 @@ impl IntoResponse for JSDelivrResponse {
 /// * 拒绝 `.` 与 `..` 片段；
 /// * 拒绝百分号编码残留的 `%2e`（不区分大小写），防止二次编码绕过；
 /// * 拒绝反斜杠与 NUL，避免不同平台下的路径语义差异。
-fn validate_path(path: &str) -> Result<(), FetchJSDelivrFailureError> {
+pub(super) fn validate_path(path: &str) -> Result<(), FetchJSDelivrFailureError> {
     if path.is_empty() {
         return Err(FetchJSDelivrFailureError::InvalidPath);
     }
@@ -171,11 +171,12 @@ fn stream_response(
     Ok(response)
 }
 
-async fn remember_jsdelivr_resource(
+pub(super) async fn remember_resource(
     path: String,
     headers: &HeaderMap,
+    cache: ResourceCache,
+    fetch: impl std::future::Future<Output = Result<reqwest::Response, UpstreamError>>,
 ) -> Result<Response, anyhow::Error> {
-    let cache = cache::shared();
     if let Some((resource, codec)) = cache
         .get_encoded(&path, |codec| accepts_encoding(headers, codec))
         .await?
@@ -198,16 +199,28 @@ async fn remember_jsdelivr_resource(
             codec,
         ));
     }
-    Ok(stream_response(
-        upstream::fetch_response(&path).await?,
-        path,
-        cache,
-        fetch_guard,
-    )?)
+    Ok(stream_response(fetch.await?, path, cache, fetch_guard)?)
 }
 
 #[instrument(skip(headers))]
-pub async fn get(PathParam(path): PathParam<String>, headers: HeaderMap) -> JSDelivrResponse {
+pub async fn get(PathParam(path): PathParam<String>, headers: HeaderMap) -> Response {
+    let policy = &CONFIG.jsdelivr.referer_check;
+    let mut response = if policy.allows(&headers) {
+        get_resource(path, headers).await.into_response()
+    } else {
+        warn!("referer check denied path {:?}", path);
+        fail_with_message::<Value>(403, None, "Referer not allowed".into()).into_response()
+    };
+    if policy.enabled {
+        // Downstream caches must not reuse an allowed response for another Referer.
+        response
+            .headers_mut()
+            .append(header::VARY, HeaderValue::from_static("Referer"));
+    }
+    response
+}
+
+async fn get_resource(path: String, headers: HeaderMap) -> JSDelivrResponse {
     if let Err(e) = validate_path(&path) {
         error!("{:?}", e);
         return JSDelivrResponse::Json(fail_with_message(400, None, e.to_string()));
@@ -220,7 +233,14 @@ pub async fn get(PathParam(path): PathParam<String>, headers: HeaderMap) -> JSDe
         return JSDelivrResponse::Json(fail_with_message(403, None, e.to_string()));
     }
 
-    match remember_jsdelivr_resource(path, &headers).await {
+    match remember_resource(
+        path.clone(),
+        &headers,
+        cache::shared(),
+        upstream::fetch_response(&path),
+    )
+    .await
+    {
         Ok(response) => JSDelivrResponse::Raw(response),
         Err(e) => {
             error!("{:?}", e);
@@ -265,8 +285,10 @@ mod tests {
         let (release, finish) = oneshot::channel();
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = [0; 4096];
-            socket.read(&mut request).await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(socket.read_u8().await.unwrap());
+            }
             socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10\r\n\r\nhello").await.unwrap();
             if finish.await.unwrap_or(false) {
                 socket.write_all(b"world").await.unwrap();
