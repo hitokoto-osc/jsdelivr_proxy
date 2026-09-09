@@ -12,7 +12,7 @@ use axum::{
     Router,
 };
 use controller::{admin, index, webhook};
-use tower_http::trace::TraceLayer;
+use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 use tracing::info;
 
 /// 组装路由表。
@@ -31,6 +31,7 @@ fn router() -> Router {
         .route("/admin/api/audit", get(admin::audit_list))
         .route("/webhook/cache/purge", post(webhook::purge_cache))
         .route("/{*path}", get(index::jsdelivr::get))
+        .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
 }
 
