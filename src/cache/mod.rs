@@ -75,7 +75,6 @@ pub enum CacheError<E> {
 /// verbatim — see [`CacheEntry::encode`].
 #[derive(Clone, Debug)]
 struct CacheEntry {
-    mime: String,
     body: Bytes,
     compression: Compression,
     /// Decompressed length, so decoding can size its buffer in one allocation.
@@ -87,8 +86,7 @@ impl CacheEntry {
     /// jsDelivr serves plenty of already-compressed assets (woff2, png, wasm);
     /// without this fallback, enabling a codec could make the cache hold *less*
     /// than it did before.
-    fn encode(resource: CachedResource, codec: Compression) -> Self {
-        let CachedResource { mime, data } = resource;
+    fn encode(data: Bytes, codec: Compression) -> Self {
         let raw_len = data.len();
         let compressed = match compress(&data, codec) {
             Ok(Some(body)) if body.len() < raw_len => Some(Bytes::from(body)),
@@ -100,13 +98,11 @@ impl CacheEntry {
         };
         match compressed {
             Some(body) => CacheEntry {
-                mime,
                 body,
                 compression: codec,
                 raw_len,
             },
             None => CacheEntry {
-                mime,
                 body: data,
                 compression: Compression::None,
                 raw_len,
@@ -114,7 +110,7 @@ impl CacheEntry {
         }
     }
 
-    fn decode(&self) -> io::Result<CachedResource> {
+    fn decode(&self, mime: String) -> io::Result<CachedResource> {
         let data = match self.compression {
             Compression::None => self.body.clone(),
             Compression::Zstd => Bytes::from(zstd::bulk::decompress(&self.body, self.raw_len)?),
@@ -124,17 +120,7 @@ impl CacheEntry {
                 Bytes::from(out)
             }
         };
-        Ok(CachedResource {
-            mime: self.mime.clone(),
-            data,
-        })
-    }
-
-    /// Bytes this entry occupies: key + Content-Type + the body as stored.
-    fn weight(&self, key: &str) -> usize {
-        key.len()
-            .saturating_add(self.mime.len())
-            .saturating_add(self.body.len())
+        Ok(CachedResource { mime, data })
     }
 }
 
@@ -156,8 +142,35 @@ fn compress(data: &[u8], codec: Compression) -> io::Result<Option<Vec<u8>>> {
     }
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+enum CacheKey {
+    Path(String),
+    Body(blake3::Hash),
+}
+
+#[derive(Clone, Debug)]
+enum CacheValue {
+    Path {
+        mime: String,
+        checksum: blake3::Hash,
+    },
+    Body(CacheEntry),
+}
+
+impl CacheValue {
+    fn weight(&self, key: &CacheKey) -> usize {
+        match (key, self) {
+            (CacheKey::Path(path), Self::Path { mime, .. }) => {
+                path.len().saturating_add(mime.len()).saturating_add(32)
+            }
+            (CacheKey::Body(_), Self::Body(body)) => 32usize.saturating_add(body.body.len()),
+            _ => unreachable!("cache key and value types must match"),
+        }
+    }
+}
+
 pub struct ResourceCache {
-    inner: MokaCache<String, CacheEntry>,
+    inner: MokaCache<CacheKey, CacheValue>,
     /// 单条目字节上限：超过则不缓存（但仍然正常返回给客户端）。
     /// Measured on the stored body, i.e. after compression, so the limit caps
     /// what the entry costs rather than how big the file was upstream.
@@ -174,11 +187,16 @@ pub struct ResourceCache {
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct CacheStats {
     pub entry_count: u64,
+    pub body_count: u64,
+    pub body_stored_bytes: u64,
+    pub orphan_body_count: u64,
+    pub orphan_stored_bytes: u64,
+    pub deduplicated_bytes: u64,
     /// Total as stored, i.e. after compression. This is what counts against
     /// `max_capacity_bytes`.
     pub stored_bytes: u64,
-    /// Total of the bodies as clients receive them, so `raw_bytes` over
-    /// `stored_bytes` is the compression ratio actually achieved.
+    /// Counts each retained body once, including bodies whose paths were purged,
+    /// so deduplication does not inflate the reported compression ratio.
     pub raw_bytes: u64,
     pub ttl_secs: u64,
     pub max_capacity_bytes: u64,
@@ -191,6 +209,8 @@ pub struct CacheStats {
 #[derive(Debug, Clone, Serialize)]
 pub struct CacheEntryInfo {
     pub key: String,
+    pub checksum: String,
+    pub shared_paths: u64,
     pub mime: String,
     pub stored_bytes: usize,
     pub raw_bytes: usize,
@@ -219,7 +239,7 @@ impl ResourceCache {
         let inner = MokaCache::builder()
             .time_to_live(Duration::from_secs(ttl_secs))
             .max_capacity(max_capacity_bytes)
-            .weigher(|key: &String, value: &CacheEntry| -> u32 {
+            .weigher(|key: &CacheKey, value: &CacheValue| -> u32 {
                 value.weight(key).try_into().unwrap_or(u32::MAX)
             })
             .build();
@@ -232,20 +252,45 @@ impl ResourceCache {
         }
     }
 
-    /// 取缓存；未命中时调用 `init` 回源，并把结果写入缓存后返回。
-    ///
-    /// 使用 moka 的 entry API（与 `try_get_with` 同一套语义，额外提供
-    /// `is_fresh()`）：同一个键上的并发未命中会被合并成一次回源，其余请求
-    /// 等待同一个 future。失败不会被缓存，且错误以 `Arc` 形式返回
-    /// （多个等待者共享同一个错误对象）。
-    ///
-    /// 超过 `max_entry_size` 的条目会在写入后立即失效，等价于「不缓存」：
-    /// 单个超大文件因此无法挤占整个缓存预算。
-    ///
-    /// A miss compresses the fetched body and immediately decompresses it again
-    /// to build the return value. That is one extra pass over bytes that just
-    /// crossed the network, and it buys a single decode path shared by hits and
-    /// misses alike.
+    // Path and body entries share one byte budget, but each write starts only
+    // that entry's TTL. Sharing content must never renew another path.
+    async fn prepare(&self, key: &str, resource: CachedResource) -> (CacheValue, CacheEntry, bool) {
+        let checksum = blake3::hash(&resource.data);
+        let path = CacheValue::Path {
+            mime: resource.mime,
+            checksum,
+        };
+        let body_key = CacheKey::Body(checksum);
+        let value = match self.inner.get(&body_key).await {
+            Some(value) => value,
+            None => CacheValue::Body(CacheEntry::encode(resource.data, self.compression)),
+        };
+        let size = path.weight(&CacheKey::Path(key.to_string())) + value.weight(&body_key);
+        let cacheable = size <= self.max_entry_size;
+        if cacheable {
+            // A new alias must not outlive the content it has just validated.
+            let value = self
+                .inner
+                .get_with(body_key.clone(), async { value.clone() })
+                .await;
+            self.inner.insert(body_key, value.clone()).await;
+            let CacheValue::Body(body) = value else {
+                unreachable!()
+            };
+            return (path, body, true);
+        }
+        debug!(
+            key,
+            size,
+            limit = self.max_entry_size,
+            "resource exceeds per-entry cache limit, not cached"
+        );
+        let CacheValue::Body(body) = value else {
+            unreachable!()
+        };
+        (path, body, false)
+    }
+
     pub async fn get_or_fetch<F, E>(
         &self,
         key: String,
@@ -255,68 +300,74 @@ impl ResourceCache {
         F: Future<Output = Result<CachedResource, E>>,
         E: Send + Sync + 'static,
     {
-        let codec = self.compression;
-        let entry = self
-            .inner
-            .entry(key.clone())
-            .or_try_insert_with(async move { init.await.map(|r| CacheEntry::encode(r, codec)) })
-            .await
-            .map_err(CacheError::Fetch)?;
-        let is_fresh = entry.is_fresh();
-        let value = entry.into_value();
-
-        if is_fresh && value.weight(&key) > self.max_entry_size {
-            debug!(
-                key = %key,
-                size = value.weight(&key),
-                limit = self.max_entry_size,
-                "resource exceeds per-entry cache limit, not cached"
-            );
-            self.inner.invalidate(&key).await;
-        }
-
-        value.decode().map_err(CacheError::Decompress)
-    }
-
-    /// Unconditional write: replaces any existing value and restarts the TTL.
-    ///
-    /// [`Self::get_or_fetch`] neither refetches nor renews on a hit, so the
-    /// periodic preload refresh has to come through here.
-    ///
-    /// Entries above `max_entry_size` are not written and return `false`.
-    pub async fn insert(&self, key: String, value: CachedResource) -> bool {
-        let entry = CacheEntry::encode(value, self.compression);
-        let size = entry.weight(&key);
-        if size > self.max_entry_size {
-            debug!(
-                key = %key,
-                size,
-                limit = self.max_entry_size,
-                "resource exceeds per-entry cache limit, not cached"
-            );
-            return false;
-        }
-        self.inner.insert(key, entry).await;
-        true
-    }
-
-    /// Restarts the TTL of an entry that is already cached, reporting whether
-    /// there was one. Preload uses this for files whose upstream hash has not
-    /// changed; going through [`Self::insert`] instead would decompress and
-    /// recompress a body that is already in exactly the form the cache wants.
-    pub async fn renew(&self, key: &str) -> bool {
-        match self.inner.get(key).await {
-            Some(entry) => {
-                self.inner.insert(key.to_string(), entry).await;
-                true
+        let path_key = CacheKey::Path(key.clone());
+        let mut init = Some(init);
+        loop {
+            let mut fetched = None;
+            let entry = self
+                .inner
+                .entry(path_key.clone())
+                .or_try_insert_with(async {
+                    let resource = init.take().expect("a request fetches at most once").await?;
+                    let (path, body, cacheable) = self.prepare(&key, resource).await;
+                    fetched = Some((body, cacheable));
+                    Ok::<_, E>(path)
+                })
+                .await
+                .map_err(CacheError::Fetch)?;
+            let CacheValue::Path { mime, checksum } = entry.into_value() else {
+                unreachable!()
+            };
+            if let Some((body, cacheable)) = fetched {
+                if !cacheable {
+                    self.inner.invalidate(&path_key).await;
+                }
+                return body.decode(mime).map_err(CacheError::Decompress);
             }
-            None => false,
+            if let Some(CacheValue::Body(body)) = self.inner.get(&CacheKey::Body(checksum)).await {
+                return body.decode(mime).map_err(CacheError::Decompress);
+            }
+            // Capacity eviction can remove content before its path expires.
+            self.inner.invalidate(&path_key).await;
         }
+    }
+
+    /// Preload refresh must replace the mapping and restart its TTL even on a
+    /// hit; ordinary requests through `get_or_fetch` must not do either.
+    pub async fn insert(&self, key: String, value: CachedResource) -> bool {
+        let (path, _, cacheable) = self.prepare(&key, value).await;
+        if cacheable {
+            self.inner.insert(CacheKey::Path(key), path).await;
+        }
+        cacheable
+    }
+
+    /// Preload can validate an unchanged resource without decoding or hashing
+    /// its cached body. A mapping alone is insufficient after body eviction.
+    pub async fn renew(&self, key: &str) -> bool {
+        let path_key = CacheKey::Path(key.to_string());
+        if let Some(path @ CacheValue::Path { checksum, .. }) = self.inner.get(&path_key).await {
+            let body_key = CacheKey::Body(checksum);
+            if let Some(body) = self.inner.get(&body_key).await {
+                self.inner.insert(body_key, body).await;
+                self.inner.insert(path_key, path).await;
+                return true;
+            }
+        }
+        false
     }
 
     #[cfg(test)]
     async fn get(&self, key: &str) -> Option<CacheEntry> {
-        self.inner.get(key).await
+        let CacheValue::Path { checksum, .. } =
+            self.inner.get(&CacheKey::Path(key.to_string())).await?
+        else {
+            unreachable!()
+        };
+        match self.inner.get(&CacheKey::Body(checksum)).await? {
+            CacheValue::Body(body) => Some(body),
+            _ => unreachable!(),
+        }
     }
 
     /// Per-entry byte limit, which preload uses to skip hopeless files
@@ -325,15 +376,49 @@ impl ResourceCache {
         self.max_entry_size
     }
 
-    /// `entry_count` and `weighted_size` are estimates while maintenance is
-    /// outstanding, so pending tasks are drained first: a panel that reports a
-    /// count nothing else agrees with is worse than a slightly slower reply.
+    // Drain eviction work before sampling so the panel's occupancy reflects
+    // capacity maintenance. Concurrent writes can still change this sample.
     pub async fn stats(&self) -> CacheStats {
         self.inner.run_pending_tasks().await;
-        let raw_bytes = self.inner.iter().map(|(_, e)| e.raw_len as u64).sum();
+        let snapshot: Vec<_> = self.inner.iter().collect();
+        let mut references = std::collections::HashMap::<_, u64>::new();
+        for (_, value) in &snapshot {
+            if let CacheValue::Path { checksum, .. } = value {
+                *references.entry(*checksum).or_default() += 1;
+            }
+        }
+        let mut entry_count = 0;
+        let mut body_count = 0;
+        let mut body_stored_bytes = 0;
+        let mut orphan_body_count = 0;
+        let mut orphan_stored_bytes = 0;
+        let mut deduplicated_bytes = 0;
+        let mut stored_bytes = 0;
+        let mut raw_bytes = 0;
+        for (key, value) in &snapshot {
+            stored_bytes += value.weight(key) as u64;
+            if let (CacheKey::Body(checksum), CacheValue::Body(body)) = (key.as_ref(), value) {
+                let paths = references.get(checksum).copied().unwrap_or(0);
+                let size = body.body.len() as u64;
+                entry_count += paths;
+                body_count += 1;
+                body_stored_bytes += size;
+                raw_bytes += body.raw_len as u64;
+                deduplicated_bytes += paths.saturating_sub(1) * size;
+                if paths == 0 {
+                    orphan_body_count += 1;
+                    orphan_stored_bytes += value.weight(key) as u64;
+                }
+            }
+        }
         CacheStats {
-            entry_count: self.inner.entry_count(),
-            stored_bytes: self.inner.weighted_size(),
+            entry_count,
+            body_count,
+            body_stored_bytes,
+            orphan_body_count,
+            orphan_stored_bytes,
+            deduplicated_bytes,
+            stored_bytes,
             raw_bytes,
             ttl_secs: self.ttl_secs,
             max_capacity_bytes: self.max_capacity_bytes,
@@ -344,19 +429,41 @@ impl ResourceCache {
 
     /// Every cached entry matching `prefix`, largest first.
     pub fn entries(&self, prefix: Option<&str>) -> Vec<CacheEntryInfo> {
-        let mut entries: Vec<CacheEntryInfo> = self
-            .inner
+        let snapshot: Vec<_> = self.inner.iter().collect();
+        let mut references = std::collections::HashMap::<_, u64>::new();
+        for (_, value) in &snapshot {
+            if let CacheValue::Path { checksum, .. } = value {
+                *references.entry(*checksum).or_default() += 1;
+            }
+        }
+        let bodies: std::collections::HashMap<_, _> = snapshot
             .iter()
-            .filter(|(key, _)| match prefix {
-                Some(prefix) => key.starts_with(prefix),
-                None => true,
+            .filter_map(|(key, value)| match (key.as_ref(), value) {
+                (CacheKey::Body(checksum), CacheValue::Body(body)) => Some((*checksum, body)),
+                _ => None,
             })
-            .map(|(key, entry)| CacheEntryInfo {
-                stored_bytes: entry.weight(key.as_str()),
-                raw_bytes: entry.raw_len,
-                mime: entry.mime.clone(),
-                compression: entry.compression,
-                key: key.to_string(),
+            .collect();
+        let mut entries: Vec<CacheEntryInfo> = snapshot
+            .iter()
+            .filter_map(|(key, value)| {
+                let (CacheKey::Path(path), CacheValue::Path { mime, checksum }) =
+                    (key.as_ref(), value)
+                else {
+                    return None;
+                };
+                if prefix.is_some_and(|prefix| !path.starts_with(prefix)) {
+                    return None;
+                }
+                let body = bodies.get(checksum)?;
+                Some(CacheEntryInfo {
+                    key: path.clone(),
+                    checksum: checksum.to_hex().to_string(),
+                    shared_paths: references[checksum],
+                    stored_bytes: path.len() + mime.len() + 64 + body.body.len(),
+                    raw_bytes: body.raw_len,
+                    mime: mime.clone(),
+                    compression: body.compression,
+                })
             })
             .collect();
         entries.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.stored_bytes));
@@ -365,8 +472,9 @@ impl ResourceCache {
 
     /// Removes one entry, reporting whether it was there to begin with.
     pub async fn invalidate_key(&self, key: &str) -> bool {
-        let existed = self.inner.contains_key(key);
-        self.inner.invalidate(key).await;
+        let key = CacheKey::Path(key.to_string());
+        let existed = self.inner.contains_key(&key);
+        self.inner.invalidate(&key).await;
         existed
     }
 
@@ -383,11 +491,14 @@ impl ResourceCache {
         let keys: Vec<String> = self
             .inner
             .iter()
-            .map(|(key, _)| key.to_string())
+            .filter_map(|(key, _)| match key.as_ref() {
+                CacheKey::Path(path) => Some(path.clone()),
+                _ => None,
+            })
             .filter(|key| key.starts_with(prefix))
             .collect();
         for key in &keys {
-            self.inner.invalidate(key).await;
+            self.inner.invalidate(&CacheKey::Path(key.clone())).await;
         }
         keys.len()
     }
@@ -395,7 +506,11 @@ impl ResourceCache {
     /// Empties the cache, returning how many entries were dropped.
     pub async fn clear(&self) -> u64 {
         self.inner.run_pending_tasks().await;
-        let removed = self.inner.entry_count();
+        let removed = self
+            .inner
+            .iter()
+            .filter(|(key, _)| matches!(key.as_ref(), CacheKey::Path(_)))
+            .count() as u64;
         // `invalidate_all` is lazy; draining again makes the count reported to
         // the caller match what a listing will show straight afterwards.
         self.inner.invalidate_all();
@@ -477,6 +592,228 @@ mod tests {
         Bytes::from(out)
     }
 
+    #[tokio::test]
+    async fn aliases_share_one_body_and_keep_their_own_mime() {
+        for codec in [Compression::None, Compression::Zstd, Compression::Brotli] {
+            let cache = ResourceCache::with_params(60, 1024 * 1024, 1024 * 1024, codec);
+            let tag = "gh/o/r@v1/file";
+            let head = "gh/o/r@HEAD/file";
+            cache.insert(tag.into(), resource("text/plain", 4096)).await;
+            cache
+                .insert(head.into(), resource("application/javascript", 4096))
+                .await;
+            let first = cache.get(tag).await.unwrap();
+            let second = cache.get(head).await.unwrap();
+            assert_eq!(first.body.as_ptr(), second.body.as_ptr());
+            let stats = cache.stats().await;
+            assert_eq!(stats.entry_count, 2);
+            assert_eq!(stats.raw_bytes, 4096);
+            assert_eq!(
+                stats.stored_bytes as usize,
+                tag.len()
+                    + head.len()
+                    + "text/plain".len()
+                    + "application/javascript".len()
+                    + 96
+                    + first.body.len()
+            );
+            for (key, mime) in [(tag, "text/plain"), (head, "application/javascript")] {
+                let result = cache
+                    .get_or_fetch::<_, Infallible>(key.into(), async {
+                        panic!("alias should hit the shared body")
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(result.mime, mime);
+                assert_eq!(result.data, resource(mime, 4096).data);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn observability_distinguishes_shared_and_unreferenced_bodies() {
+        let cache = ResourceCache::with_params(60, 1024 * 1024, 1024 * 1024, Compression::None);
+        let tag = "gh/o/r@v1/file";
+        let head = "gh/o/r@HEAD/file";
+        cache.insert(tag.into(), resource("text/plain", 1024)).await;
+        cache
+            .insert(head.into(), resource("text/plain", 1024))
+            .await;
+        let stats = cache.stats().await;
+        assert_eq!(stats.entry_count, 2);
+        assert_eq!(stats.body_count, 1);
+        assert_eq!(stats.body_stored_bytes, 1024);
+        assert_eq!(stats.deduplicated_bytes, 1024);
+        assert_eq!(stats.orphan_body_count, 0);
+        let filtered = cache.entries(Some("gh/o/r@HEAD"));
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].shared_paths, 2);
+        assert_eq!(
+            filtered[0].checksum,
+            blake3::hash(&resource("text/plain", 1024).data)
+                .to_hex()
+                .to_string()
+        );
+
+        cache.invalidate_key(tag).await;
+        let stats = cache.stats().await;
+        assert_eq!(stats.entry_count, 1);
+        assert_eq!(stats.deduplicated_bytes, 0);
+        assert_eq!(stats.orphan_body_count, 0);
+        assert_eq!(cache.entries(None)[0].shared_paths, 1);
+
+        cache.invalidate_key(head).await;
+        let stats = cache.stats().await;
+        assert_eq!(stats.entry_count, 0);
+        assert_eq!(stats.body_count, 1);
+        assert_eq!(stats.orphan_body_count, 1);
+        assert_eq!(stats.orphan_stored_bytes, 1056);
+        assert_eq!(stats.stored_bytes, stats.orphan_stored_bytes);
+        cache.clear().await;
+        let stats = cache.stats().await;
+        assert_eq!(stats.body_count, 0);
+        assert_eq!(stats.body_stored_bytes, 0);
+        assert_eq!(stats.orphan_body_count, 0);
+        assert_eq!(stats.orphan_stored_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn renewing_one_alias_does_not_renew_another() {
+        let cache = ResourceCache::with_params(2, 1024 * 1024, 1024 * 1024, Compression::None);
+        cache
+            .insert("tag".into(), resource("text/plain", 128))
+            .await;
+        cache
+            .insert("HEAD".into(), resource("text/plain", 128))
+            .await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(cache.renew("HEAD").await);
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        assert!(cache.get("tag").await.is_none());
+        assert!(cache.get("HEAD").await.is_some());
+        let result = cache
+            .get_or_fetch::<_, Infallible>("tag".into(), async { Ok(resource("text/plain", 256)) })
+            .await
+            .unwrap();
+        assert_eq!(result.data.len(), 256);
+        assert_eq!(cache.get("HEAD").await.unwrap().raw_len, 128);
+    }
+
+    #[tokio::test]
+    async fn replacing_and_purging_aliases_preserves_other_paths() {
+        let cache = ResourceCache::with_params(60, 1024 * 1024, 1024 * 1024, Compression::None);
+        for key in ["tag", "HEAD", "branch/main"] {
+            cache.insert(key.into(), resource("text/plain", 128)).await;
+        }
+        cache
+            .insert("HEAD".into(), resource("text/plain", 256))
+            .await;
+        assert_eq!(cache.get("tag").await.unwrap().raw_len, 128);
+        assert!(cache.invalidate_key("tag").await);
+        assert_eq!(cache.get("branch/main").await.unwrap().raw_len, 128);
+        assert_eq!(cache.invalidate_prefix("branch/").await, 1);
+        assert_eq!(cache.get("HEAD").await.unwrap().raw_len, 256);
+        assert_eq!(cache.clear().await, 1);
+        assert_eq!(cache.stats().await.stored_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn missing_shared_body_refetches_and_cannot_be_renewed() {
+        let cache = ResourceCache::with_params(60, 1024 * 1024, 1024 * 1024, Compression::None);
+        let original = resource("text/plain", 128);
+        let checksum = blake3::hash(&original.data);
+        cache.insert("HEAD".into(), original).await;
+        cache.inner.invalidate(&CacheKey::Body(checksum)).await;
+        assert!(!cache.renew("HEAD").await);
+        assert!(cache.entries(None).is_empty());
+        let result = cache
+            .get_or_fetch::<_, Infallible>("HEAD".into(), async { Ok(resource("text/plain", 256)) })
+            .await
+            .unwrap();
+        assert_eq!(result.data.len(), 256);
+    }
+
+    #[tokio::test]
+    async fn concurrent_misses_still_share_one_fetch() {
+        let cache = ResourceCache::with_params(60, 1024 * 1024, 1024 * 1024, Compression::Zstd);
+        let calls = AtomicUsize::new(0);
+        let fetch = || {
+            cache.get_or_fetch::<_, Infallible>("HEAD".into(), async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Ok(resource("text/plain", 4096))
+            })
+        };
+        let (a, b, c) = tokio::join!(fetch(), fetch(), fetch());
+        assert_eq!(a.unwrap().data, b.unwrap().data);
+        assert_eq!(c.unwrap().data.len(), 4096);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_aliases_converge_on_one_stored_body() {
+        let cache = Arc::new(ResourceCache::with_params(
+            60,
+            1024 * 1024,
+            1024 * 1024,
+            Compression::Zstd,
+        ));
+        let barrier = Arc::new(tokio::sync::Barrier::new(16));
+        let mut tasks = Vec::new();
+        for i in 0..16 {
+            let cache = cache.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                cache
+                    .get_or_fetch::<_, Infallible>(format!("alias/{i}"), async {
+                        Ok(resource("text/plain", 4096))
+                    })
+                    .await
+                    .unwrap();
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+        let body = cache.get("alias/0").await.unwrap();
+        for i in 1..16 {
+            assert_eq!(
+                cache
+                    .get(&format!("alias/{i}"))
+                    .await
+                    .unwrap()
+                    .body
+                    .as_ptr(),
+                body.body.as_ptr()
+            );
+        }
+        assert_eq!(cache.stats().await.raw_bytes, 4096);
+    }
+
+    #[tokio::test]
+    async fn metadata_and_shared_bodies_obey_one_capacity_limit() {
+        let cache = ResourceCache::with_params(60, 1024, 1024, Compression::None);
+        for i in 0..100 {
+            cache
+                .insert(format!("path/{i}"), resource("text/plain", 512))
+                .await;
+        }
+        let stats = cache.stats().await;
+        assert!(stats.stored_bytes <= 1024);
+    }
+
+    #[tokio::test]
+    async fn unreferenced_bodies_expire() {
+        let cache = ResourceCache::with_params(1, 1024 * 1024, 1024 * 1024, Compression::None);
+        cache
+            .insert("tag".into(), resource("text/plain", 128))
+            .await;
+        cache.invalidate_key("tag").await;
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert_eq!(cache.stats().await.stored_bytes, 0);
+    }
+
     /// 命中缓存时不应再次调用 loader。
     #[tokio::test]
     async fn cache_hit_does_not_reinvoke_loader() {
@@ -543,6 +880,7 @@ mod tests {
 
         cache.run_pending_tasks().await;
         assert!(cache.get("npm/big@1/big.bin").await.is_none());
+        assert_eq!(cache.stats().await.stored_bytes, 0);
 
         // 未被缓存 => 下一次请求必须重新回源
         cache
@@ -557,7 +895,7 @@ mod tests {
     async fn entry_at_size_limit_is_cached() {
         let key = "npm/edge@1/edge.js".to_string();
         let mime = "application/javascript";
-        let limit = key.len() + mime.len() + 32;
+        let limit = key.len() + mime.len() + 64 + 32;
         let cache = ResourceCache::with_params(60, 1024 * 1024, limit, Compression::None);
 
         cache
@@ -758,7 +1096,7 @@ mod tests {
             .get(&key)
             .await
             .expect("compressed body fits the limit");
-        assert!(stored.weight(&key) <= limit);
+        assert!(key.len() + "application/javascript".len() + 64 + stored.body.len() <= limit);
         assert!(
             stored.raw_len > limit,
             "the raw body would have been rejected"
