@@ -15,9 +15,9 @@ RUN cargo +nightly build --release --target x86_64-unknown-linux-musl
 
 FROM alpine:3.24
 ENV TZ Asia/Shanghai
-RUN apk add alpine-conf tzdata && \
-    /sbin/setup-timezone -z Asia/Shanghai && \
-    apk del alpine-conf
+RUN apk add --no-cache tzdata && \
+    ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+    echo Asia/Shanghai > /etc/timezone
 
 ENV WORKDIR /app
 VOLUME $WORKDIR/data
