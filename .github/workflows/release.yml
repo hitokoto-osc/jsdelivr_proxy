@@ -228,6 +228,7 @@ jobs:
           images: |
             ${{ env.DOCKERHUB_IMAGE }}
             ${{ env.GHCR_IMAGE }}
+          flavor: latest=true
           tags: |
             type=ref,event=tag
             type=semver,pattern=v{{version}}
@@ -247,10 +248,15 @@ jobs:
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.DOCKERHUB_IMAGE }}@sha256:%s ' *)
+          # Source manifests must exist in the destination registry.
+          for image in "$DOCKERHUB_IMAGE" "$GHCR_IMAGE"; do
+            image="$(printf '%s' "$image" | tr '[:upper:]' '[:lower:]')"
+            docker buildx imagetools create \
+              $(jq -cr --arg image "$image" '.tags | map(select(startswith($image + ":"))) | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+              $(printf "$image@sha256:%s " *)
+          done
       - name: Inspect image
         run: |
-          docker buildx imagetools inspect "${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.version }}"
-          docker buildx imagetools inspect "${{ env.GHCR_IMAGE }}:${{ steps.meta.outputs.version }}"
+          for tag in $(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON"); do
+            docker buildx imagetools inspect "$tag"
+          done
