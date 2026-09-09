@@ -3,12 +3,14 @@ use std::error::Error;
 use config::{Config as conf, Environment as Env, File, Map};
 use serde::Deserialize;
 
+pub mod admin;
 pub mod allowlist;
 pub mod cache;
 pub mod env;
 pub mod jsdelivr;
 pub mod preload;
 pub mod server;
+use admin::Admin;
 use cache::Cache;
 use env::Environment;
 use jsdelivr::Jsdelivr;
@@ -37,6 +39,8 @@ fn with_list_keys(env: Env) -> Env {
 #[derive(Deserialize)]
 pub struct Config {
     pub env: Environment,
+    #[serde(default)]
+    pub admin: Admin,
     #[serde(default)]
     pub cache: Cache,
     #[serde(default)]

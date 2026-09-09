@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>jsdelivr_proxy 管理面板</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --border: #e2e5ea;
+        --text: #1c1f24;
+        --muted: #6b7280;
+        --accent: #2563eb;
+        --danger: #dc2626;
+        --ok: #16a34a;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #14161a;
+          --panel: #1c1f24;
+          --border: #2b2f36;
+          --text: #e6e8eb;
+          --muted: #9099a5;
+          --accent: #60a5fa;
+          --danger: #f87171;
+          --ok: #4ade80;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.6 system-ui, -apple-system, "Segoe UI", "Noto Sans SC", sans-serif;
+      }
+      main { max-width: 1100px; margin: 0 auto; }
+      h1 { font-size: 20px; margin: 0; }
+      h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 20px;
+      }
+      .auth { display: flex; gap: 8px; align-items: center; }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+      .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+      .metrics { display: grid; gap: 10px 20px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+      .metric .label { color: var(--muted); font-size: 12px; }
+      .metric .value { font-size: 18px; font-variant-numeric: tabular-nums; }
+      input, button, select {
+        font: inherit;
+        color: inherit;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        padding: 6px 10px;
+      }
+      input { min-width: 220px; }
+      button { cursor: pointer; }
+      button:hover { border-color: var(--accent); }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button.danger { color: var(--danger); }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+      th { color: var(--muted); font-weight: 500; }
+      td.num { text-align: right; font-variant-numeric: tabular-nums; }
+      td.key { word-break: break-all; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+      .scroll { max-height: 420px; overflow: auto; }
+      .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+      .muted { color: var(--muted); }
+      .status { font-size: 13px; }
+      .status.ok { color: var(--ok); }
+      .status.error { color: var(--danger); }
+      .empty { color: var(--muted); padding: 12px 0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>jsdelivr_proxy 管理面板</h1>
+        <div class="auth">
+          <input id="key" type="password" placeholder="管理员 Key" autocomplete="off" />
+          <button id="save" class="primary">连接</button>
+          <span id="status" class="status muted">未连接</span>
+        </div>
+      </header>
+
+      <div class="grid">
+        <section class="card">
+          <h2>进程</h2>
+          <div class="metrics">
+            <div class="metric"><div class="label">CPU</div><div class="value" id="cpu">—</div></div>
+            <div class="metric"><div class="label">常驻内存 RSS</div><div class="value" id="rss">—</div></div>
+            <div class="metric"><div class="label">虚拟内存</div><div class="value" id="virt">—</div></div>
+            <div class="metric"><div class="label">运行时长</div><div class="value" id="uptime">—</div></div>
+          </div>
+          <p class="muted" id="sampled">—</p>
+        </section>
+
+        <section class="card">
+          <h2>缓存</h2>
+          <div class="metrics">
+            <div class="metric"><div class="label">条目数</div><div class="value" id="entries">—</div></div>
+            <div class="metric"><div class="label">占用 / 预算</div><div class="value" id="usage">—</div></div>
+            <div class="metric"><div class="label">原始体积</div><div class="value" id="raw">—</div></div>
+            <div class="metric"><div class="label">压缩比</div><div class="value" id="ratio">—</div></div>
+          </div>
+          <p class="muted" id="cache-config">—</p>
+        </section>
+      </div>
+
+      <section class="card">
+        <h2>缓存条目</h2>
+        <div class="toolbar">
+          <input id="prefix" placeholder="按前缀筛选，如 gh/owner/repo@HEAD" />
+          <button id="refresh-cache">刷新</button>
+          <button id="purge-prefix" class="danger">清除该前缀</button>
+          <button id="purge-all" class="danger">清空全部</button>
+          <span class="muted" id="cache-count"></span>
+        </div>
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>缓存键</th>
+                <th>类型</th>
+                <th class="num">占用</th>
+                <th class="num">原始</th>
+                <th>压缩</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="cache-rows"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="cache-empty" hidden>没有匹配的缓存条目。</div>
+      </section>
+
+      <section class="card">
+        <h2>操作记录 <span class="muted" id="audit-backend"></span></h2>
+        <div class="toolbar">
+          <button id="refresh-audit">刷新</button>
+        </div>
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>来源</th>
+                <th>来访地址</th>
+                <th>操作</th>
+                <th>目标</th>
+                <th>结果</th>
+              </tr>
+            </thead>
+            <tbody id="audit-rows"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="audit-empty" hidden>暂无操作记录。</div>
+      </section>
+    </main>
+
+    <script>
+      "use strict";
+
+      const STORAGE_KEY = "jsdelivr_proxy_admin_key";
+      const STATS_INTERVAL_MS = 5000;
+
+      const $ = (id) => document.getElementById(id);
+      let adminKey = "";
+      let timer = null;
+
+      // localStorage throws in some privacy modes; the panel still works, the
+      // key just has to be typed again after a reload.
+      function readStoredKey() {
+        try {
+          return localStorage.getItem(STORAGE_KEY) || "";
+        } catch {
+          return "";
+        }
+      }
+
+      function storeKey(value) {
+        try {
+          localStorage.setItem(STORAGE_KEY, value);
+        } catch {
+          /* ignore */
+        }
+      }
+
+      function setStatus(text, kind) {
+        const el = $("status");
+        el.textContent = text;
+        el.className = "status " + (kind || "muted");
+      }
+
+      function bytes(value) {
+        if (value === null || value === undefined) return "—";
+        const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+        let n = Number(value);
+        let i = 0;
+        while (n >= 1024 && i < units.length - 1) {
+          n /= 1024;
+          i += 1;
+        }
+        return (i === 0 ? n : n.toFixed(n >= 100 ? 0 : 1)) + " " + units[i];
+      }
+
+      function duration(seconds) {
+        const s = Number(seconds) || 0;
+        const d = Math.floor(s / 86400);
+        const h = Math.floor((s % 86400) / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        if (d > 0) return `${d} 天 ${h} 小时`;
+        if (h > 0) return `${h} 小时 ${m} 分`;
+        return `${m} 分 ${s % 60} 秒`;
+      }
+
+      async function api(path, options) {
+        const response = await fetch(path, {
+          ...options,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer " + adminKey,
+            ...(options && options.headers),
+          },
+        });
+        const body = await response.json().catch(() => null);
+        if (!response.ok) {
+          throw new Error((body && body.message) || `HTTP ${response.status}`);
+        }
+        return body.data;
+      }
+
+      function renderStats(data) {
+        const p = data.process;
+        const c = data.cache;
+        const cores = p.cpu_count ? ` / ${p.cpu_count} 核` : "";
+        $("cpu").textContent = p.sampled_at ? p.cpu_percent.toFixed(1) + "%" + cores : "采样中…";
+        $("rss").textContent = bytes(p.memory_bytes);
+        $("virt").textContent = bytes(p.virtual_memory_bytes);
+        $("uptime").textContent = duration(p.uptime_secs);
+        $("sampled").textContent = p.sampled_at
+          ? "最近采样：" + new Date(p.sampled_at).toLocaleTimeString()
+          : "等待首次采样（每 5 秒一次）";
+
+        $("entries").textContent = c.entry_count.toLocaleString();
+        $("usage").textContent = bytes(c.stored_bytes) + " / " + bytes(c.max_capacity_bytes);
+        $("raw").textContent = bytes(c.raw_bytes);
+        $("ratio").textContent =
+          c.stored_bytes > 0 ? (c.raw_bytes / c.stored_bytes).toFixed(2) + "×" : "—";
+        $("cache-config").textContent =
+          `TTL ${c.ttl_secs} 秒 · 单条上限 ${bytes(c.max_entry_size_bytes)} · 压缩 ${c.compression}` +
+          ` · Webhook ${data.webhook.enabled ? "已启用" : "未启用"}`;
+        $("audit-backend").textContent = "· 存储：" + data.audit.backend;
+      }
+
+      function renderCache(data) {
+        const tbody = $("cache-rows");
+        tbody.replaceChildren();
+        for (const entry of data.entries) {
+          const tr = document.createElement("tr");
+          const cells = [
+            ["key", entry.key],
+            ["", entry.mime],
+            ["num", bytes(entry.stored_bytes)],
+            ["num", bytes(entry.raw_bytes)],
+            ["", entry.compression],
+          ];
+          for (const [cls, text] of cells) {
+            const td = document.createElement("td");
+            if (cls) td.className = cls;
+            td.textContent = text;
+            tr.appendChild(td);
+          }
+          const action = document.createElement("td");
+          const button = document.createElement("button");
+          button.className = "danger";
+          button.textContent = "清除";
+          button.addEventListener("click", () => purge({ keys: [entry.key] }));
+          action.appendChild(button);
+          tr.appendChild(action);
+          tbody.appendChild(tr);
+        }
+        $("cache-empty").hidden = data.entries.length > 0;
+        $("cache-count").textContent =
+          data.total > data.entries.length
+            ? `显示 ${data.entries.length} / ${data.total} 条`
+            : `共 ${data.total} 条`;
+      }
+
+      function renderAudit(data) {
+        const tbody = $("audit-rows");
+        tbody.replaceChildren();
+        for (const record of data.records) {
+          const tr = document.createElement("tr");
+          const cells = [
+            new Date(record.ts).toLocaleString(),
+            record.actor,
+            record.remote_addr || "—",
+            record.action,
+            record.target || "—",
+            (record.success ? "成功" : "失败") + (record.detail ? "：" + record.detail : ""),
+          ];
+          for (const text of cells) {
+            const td = document.createElement("td");
+            td.textContent = text;
+            tr.appendChild(td);
+          }
+          tbody.appendChild(tr);
+        }
+        $("audit-empty").hidden = data.records.length > 0;
+      }
+
+      function currentPrefix() {
+        return $("prefix").value.trim();
+      }
+
+      async function loadStats() {
+        renderStats(await api("/admin/api/stats"));
+      }
+
+      async function loadCache() {
+        const prefix = currentPrefix();
+        const query = prefix ? "?prefix=" + encodeURIComponent(prefix) : "";
+        renderCache(await api("/admin/api/cache" + query));
+      }
+
+      async function loadAudit() {
+        renderAudit(await api("/admin/api/audit"));
+      }
+
+      async function refreshAll() {
+        try {
+          await Promise.all([loadStats(), loadCache(), loadAudit()]);
+          setStatus("已连接", "ok");
+        } catch (e) {
+          setStatus(e.message, "error");
+          stopPolling();
+        }
+      }
+
+      async function purge(scope) {
+        const label = scope.all ? "全部缓存" : scope.prefix ? `前缀 ${scope.prefix}` : scope.keys.join("、");
+        if (!window.confirm(`确认清除${label}？`)) return;
+        try {
+          const result = await api("/admin/api/cache/purge", {
+            method: "POST",
+            body: JSON.stringify(scope),
+          });
+          setStatus(`已清除 ${result.removed} 条`, "ok");
+          await Promise.all([loadStats(), loadCache(), loadAudit()]);
+        } catch (e) {
+          setStatus(e.message, "error");
+        }
+      }
+
+      function startPolling() {
+        stopPolling();
+        timer = setInterval(() => {
+          loadStats().catch((e) => {
+            setStatus(e.message, "error");
+            stopPolling();
+          });
+        }, STATS_INTERVAL_MS);
+      }
+
+      function stopPolling() {
+        if (timer !== null) {
+          clearInterval(timer);
+          timer = null;
+        }
+      }
+
+      async function connect() {
+        adminKey = $("key").value.trim();
+        if (!adminKey) {
+          setStatus("请填写管理员 Key", "error");
+          return;
+        }
+        storeKey(adminKey);
+        setStatus("连接中…", "muted");
+        await refreshAll();
+        if ($("status").classList.contains("ok")) startPolling();
+      }
+
+      $("save").addEventListener("click", connect);
+      $("key").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") connect();
+      });
+      $("refresh-cache").addEventListener("click", () => loadCache().catch((e) => setStatus(e.message, "error")));
+      $("refresh-audit").addEventListener("click", () => loadAudit().catch((e) => setStatus(e.message, "error")));
+      $("prefix").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") loadCache().catch((err) => setStatus(err.message, "error"));
+      });
+      $("purge-prefix").addEventListener("click", () => {
+        const prefix = currentPrefix();
+        if (!prefix) {
+          setStatus("请先填写前缀", "error");
+          return;
+        }
+        purge({ prefix });
+      });
+      $("purge-all").addEventListener("click", () => purge({ all: true }));
+
+      const stored = readStoredKey();
+      if (stored) {
+        $("key").value = stored;
+        connect();
+      }
+    </script>
+  </body>
+</html>

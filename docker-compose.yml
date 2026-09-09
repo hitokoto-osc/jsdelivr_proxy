@@ -21,6 +21,14 @@ services:
       # JSDRLIVR_PROXY_CACHE__TTL_SECS: 7200          # 缓存 TTL，默认 2 小时
       # JSDRLIVR_PROXY_CACHE__MAX_CAPACITY_MB: 256    # 缓存总字节预算，默认 256MB
       # JSDRLIVR_PROXY_CACHE__MAX_ENTRY_SIZE_MB: 16   # 单条目上限，超过则不缓存，默认 16MB
+      # 管理面板 / 管理 API：不设置 = 关闭（默认），/admin 与管理 API 返回 503。
+      # JSDRLIVR_PROXY_ADMIN_KEY: "用一个足够长的随机串"
+      # 缓存清除 webhook：不设置 = 关闭。字段名含下划线，层级用双下划线分隔。
+      # 校验 X-Hub-Signature-256（对原始请求体的 HMAC-SHA256），与上面的 key 相互独立。
+      # JSDRLIVR_PROXY_ADMIN__WEBHOOK_SECRET: "另一个随机串"
+      # 操作记录持久化到 Turso：不设置 = 存进程内环形缓冲（最近 500 条），重启即丢。
+      # JSDRLIVR_PROXY_ADMIN_TURSO_URL: "libsql://<db>-<org>.turso.io"
+      # JSDRLIVR_PROXY_ADMIN_TURSO_TOKEN: ""
       # 资源白名单（反滥用）：列表用逗号分隔，全部留空 / 不设置 = 不限制（默认）。
       # 只要设置了其中任意一项，白名单即生效，未命中的请求返回 403。
       # JSDRLIVR_PROXY_JSDELIVR_ALLOWLIST_PROVIDERS: "npm,gh"

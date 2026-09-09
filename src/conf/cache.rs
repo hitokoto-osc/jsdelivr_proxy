@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// 进程内缓存配置。
@@ -23,7 +23,7 @@ pub struct Cache {
 }
 
 /// Codec used to store cached response bodies in memory.
-#[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Compression {
     /// Keep bodies verbatim, which makes a cache hit a refcount bump and

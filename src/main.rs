@@ -1,10 +1,12 @@
 use colored::*;
 use tracing::{info, warn};
+mod audit;
 pub mod backend;
 mod cache;
 mod command;
 pub mod conf;
 mod logger;
+mod metrics;
 mod preload;
 mod upstream;
 pub mod utils;
@@ -48,6 +50,26 @@ async fn main() -> anyhow::Result<()> {
             .yellow()
         );
     }
+    // The webhook also writes audit records, so the log has to exist whenever
+    // either entry point is on.
+    if CONFIG.admin.is_enabled() || CONFIG.admin.is_webhook_enabled() {
+        audit::init().await;
+    }
+    if CONFIG.admin.is_enabled() {
+        metrics::spawn();
+        info!("Admin panel and API: enabled at /admin");
+    } else {
+        info!("Admin panel and API: disabled (no admin key configured)");
+    }
+    info!(
+        "Cache purge webhook: {}",
+        if CONFIG.admin.is_webhook_enabled() {
+            "enabled at POST /webhook/cache/purge"
+        } else {
+            "disabled (no webhook secret configured)"
+        }
+    );
+
     preload::spawn(); // background task; must not delay startup
 
     info!("Starting HTTP Server...");
