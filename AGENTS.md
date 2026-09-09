@@ -45,7 +45,30 @@ When your changes create orphans:
 
 The test: Every changed line should trace directly to the user's request.
 
-## 4. Goal-Driven Execution
+## 4. Comments
+
+**Write English. Explain why, never what.**
+
+The reader can follow the code; a comment that restates it is noise.
+
+Delete on sight:
+
+- Restatements of the signature or the next line (`/// Returns the name` on `fn name()`).
+- Section labels for self-evident blocks.
+- Field docs that only expand the field name into a sentence.
+
+Worth writing:
+
+- Why this approach and not the obvious one.
+- Constraints imposed from outside: upstream API quirks, protocol requirements,
+  platform differences.
+- Invariants a future edit could silently break.
+
+Comments and log messages are English, including in files whose existing
+comments are not. Leave pre-existing comments alone; this applies to lines you
+write.
+
+## 5. Goal-Driven Execution
 
 **Define success criteria. Loop until verified.**
 
@@ -65,7 +88,7 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
-## 5. Git Commit Rules
+## 6. Git Commit Rules
 
 ### Stage only related files
 
