@@ -1,10 +1,11 @@
 use colored::*;
 use tracing::{info, warn};
-mod backend;
+pub mod backend;
 mod cache;
 mod command;
 pub mod conf;
 mod logger;
+mod preload;
 mod upstream;
 pub mod utils;
 
@@ -44,6 +45,8 @@ async fn main() -> anyhow::Result<()> {
             .yellow()
         );
     }
+    preload::spawn(); // background task; must not delay startup
+
     info!("Starting HTTP Server...");
     backend::init().await?; // 启动 axum Web Server
     Ok(())

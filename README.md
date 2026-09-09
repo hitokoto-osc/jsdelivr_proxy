@@ -85,6 +85,112 @@ JSDRLIVR_PROXY_JSDELIVR_ALLOWLIST_NPM="vue,@hitokoto" ./jsdelivr_proxy
 > 环境变量方式仅在**不使用 `-c <配置文件>`** 时生效（`-c` 会关掉环境变量 source，
 > 这是既有行为）。列表键的逗号拆分在 `src/conf/mod.rs` 的 `LIST_VALUED_KEYS` 中登记。
 
+## 资源预载（Preload）
+
+冷启动之后第一个请求每个资源的人，都要替所有人吃一次回源延迟（实测 gcore 回源
+0.7 ~ 2.3 秒）。预载把指定仓库 / 包的前端资源在**启动时**就灌进缓存，
+让第一个真实请求也是命中（实测 4ms）。
+
+**默认不预载**：不写 `[preload]`（或 `targets` 为空）时行为与之前完全一致。
+
+```toml
+[[preload.targets]]
+provider = "gh"
+name = "hitokoto-osc/sentences-bundle"
+```
+
+只写这两行就够了：版本默认取**仓库的默认分支**，内容默认取**全部前端资源文件**
+并跳过 `.` 开头的隐藏目录。
+
+### 版本怎么定
+
+| provider | `version` 省略时 | 说明 |
+| --- | --- | --- |
+| `gh` | `HEAD` | jsDelivr 侧解析为仓库的默认分支（实测 `@HEAD` 与 `@<默认分支>` 返回同一份清单） |
+| `npm` | `latest` | dist-tag |
+
+`version` 也可以写成分支名、tag、commit 或 semver 范围。清单接口只认具体版本
+（`npm/vue@latest` 会被它拒掉），因此 dist-tag 与 semver 范围会先经
+`/v1/packages/.../resolved?specifier=` 换算一次；反过来 gh 的分支名能被清单接口
+直接接受，却不能被 `resolved` 解析。两条路都试过，写哪种形态都能用。
+
+> gh 的 `latest` 在 jsDelivr 的原意是「最新的 **tag**」，和「默认分支」不是一回事。
+> 本项目按「默认 = 默认分支」的语义把 gh 的 `latest` 归一成了 `HEAD`；
+> 要最新 tag 请直接写 tag，或者写 semver 范围（如 `"1.0"`）让 `resolved` 去挑。
+
+**必须知道的一点**：预热的是**精确的缓存键**，而缓存键就是客户端请求的路径
+（`gh/<owner>/<repo>@<version>/<file>`）。`version` 会原样进键，所以它要和客户端
+实际请求的版本串一致 —— 预热 `@HEAD` 命中不了请求 `@master` 的客户端。
+要覆盖多个版本串，就写多个 `[[preload.targets]]`。启动日志会打出每个目标
+预热出来的键前缀，可以直接核对。
+
+### 内容怎么选
+
+默认放行的扩展名（不区分大小写）：
+
+| 类别 | 扩展名 |
+| --- | --- |
+| 脚本 | `js` `mjs` `cjs` |
+| 样式 | `css` |
+| 标记 / 结构化数据 | `json` `html` `htm` `wasm` |
+| 图片 | `apng` `avif` `bmp` `gif` `ico` `jpeg` `jpg` `png` `svg` `webp` |
+| 字体 | `eot` `otf` `ttf` `woff` `woff2` |
+
+刻意**不**收录 `map`（source map，只对调试有用且动辄数 MB）、`d.ts`、`md` 等
+浏览器不会加载的文件。
+
+`.` 开头的**隐藏目录与隐藏文件**（`.github/`、`.vscode/`、`.gitignore`）默认全部跳过，
+判定按路径片段进行，`vue.global.min.js` 这种带点的文件名不受影响。
+
+四个可选的收窄 / 放宽开关：
+
+| 字段 | 作用 |
+| --- | --- |
+| `extensions` | 覆盖默认集合；`["*"]` = 不按扩展名过滤 |
+| `include` | 只要这些路径前缀下的文件；留空 = 整个仓库 |
+| `exclude` | 排除这些前缀，优先级高于 `include` |
+| `include_hidden` | 连隐藏目录一起预载，默认 `false` |
+
+`include` / `exclude` 按**路径片段整体**比较，不是裸的 `starts_with`：
+`/dist` 命中 `/dist/vue.js`，但不会命中 `/dist-old/x.js`。
+
+### 刷新与开销
+
+预载条目和普通条目共用同一份 TTL，`get_or_fetch` 命中时既不回源也不续期，
+所以只载一次的话 TTL 一到就全没了。预载因此是个**周期性任务**，
+默认周期是 `cache.ttl_secs` 的 3/4（默认 TTL 下即 5400 秒），保证条目在过期前被续上。
+
+续期**不等于**重新下载：清单接口带有每个文件的 SHA-256，摘要没变且条目还在缓存里时，
+只把旧值重新写回去重置 TTL，一个字节都不用重传。日志里的 `warmed` / `renewed`
+就是这两条路径的计数。
+
+几道防呆闸：
+
+* 清单里体积超过 `cache.max_entry_size_mb` 的文件在**下载之前**就被跳过
+  —— 反正下下来也进不了缓存；
+* 单个目标最多预载 `max_files` 个文件（默认 512）；
+* 计划下载量超过整个缓存预算时打 `warn!`（那种配置下条目只会互相淘汰）；
+* 被资源白名单拒绝的目标直接跳过并告警：那些资源永远服务不出去，
+  预热它们只是白占缓存预算。
+
+预载失败（数据 API 不可达、目标配错等）只影响预热本身，HTTP 服务照常启动与服务。
+
+### 完整配置项
+
+| 配置文件（`[preload]`） | 环境变量 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | `JSDRLIVR_PROXY_PRELOAD_ENABLED` | 有 `targets` 即开 | 总开关 |
+| `data_api` | `JSDRLIVR_PROXY_PRELOAD__DATA_API` | `https://data.jsdelivr.com` | 列清单用的数据 API |
+| `refresh_interval_secs` | `JSDRLIVR_PROXY_PRELOAD__REFRESH_INTERVAL_SECS` | `cache.ttl_secs` x 3/4 | 刷新周期，下限 60 秒 |
+| `concurrency` | `JSDRLIVR_PROXY_PRELOAD_CONCURRENCY` | `4` | 单目标内的并发回源数 |
+| `max_files` | `JSDRLIVR_PROXY_PRELOAD__MAX_FILES` | `512` | 单目标预载文件数上限 |
+
+> `data_api` 与 `jsdelivr.mirror` 是**两个不同的服务**：gcore 等镜像只分发资源，
+> 不提供 `/v1/packages` 清单接口，所以它们分开配。
+>
+> `[[preload.targets]]` 是数组表，`config` 的环境变量 source 表达不了，
+> **只能写在配置文件里**；上面这些标量项才能用环境变量覆盖。
+
 ## Docker 部署
 
 ### 预构建镜像

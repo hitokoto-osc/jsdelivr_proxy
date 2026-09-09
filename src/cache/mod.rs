@@ -109,9 +109,35 @@ impl ResourceCache {
         Ok(value)
     }
 
-    #[cfg(test)]
-    async fn get(&self, key: &str) -> Option<CachedResource> {
+    /// Unconditional write: replaces any existing value and restarts the TTL.
+    ///
+    /// [`Self::get_or_fetch`] neither refetches nor renews on a hit, so the
+    /// periodic preload refresh has to come through here.
+    ///
+    /// Entries above `max_entry_size` are not written and return `false`.
+    pub async fn insert(&self, key: String, value: CachedResource) -> bool {
+        let size = value.weight(&key);
+        if size > self.max_entry_size {
+            debug!(
+                key = %key,
+                size,
+                limit = self.max_entry_size,
+                "resource exceeds per-entry cache limit, not cached"
+            );
+            return false;
+        }
+        self.inner.insert(key, value).await;
+        true
+    }
+
+    pub async fn get(&self, key: &str) -> Option<CachedResource> {
         self.inner.get(key).await
+    }
+
+    /// Per-entry byte limit, which preload uses to skip hopeless files
+    /// before downloading them.
+    pub fn max_entry_size(&self) -> usize {
+        self.max_entry_size
     }
 
     #[cfg(test)]
@@ -127,6 +153,18 @@ where
     E: Send + Sync + 'static,
 {
     CACHE.get_or_fetch(key, init).await
+}
+
+pub async fn insert(key: String, value: CachedResource) -> bool {
+    CACHE.insert(key, value).await
+}
+
+pub async fn get(key: &str) -> Option<CachedResource> {
+    CACHE.get(key).await
+}
+
+pub fn max_entry_size() -> usize {
+    CACHE.max_entry_size()
 }
 
 #[cfg(test)]
@@ -232,6 +270,64 @@ mod tests {
 
         cache.run_pending_tasks().await;
         assert!(cache.get(&key).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn insert_overwrites_the_existing_entry() {
+        let cache = ResourceCache::with_params(60, 1024 * 1024, 1024 * 1024);
+        let key = "gh/o/r@HEAD/x.json".to_string();
+
+        cache
+            .get_or_fetch::<_, Infallible>(key.clone(), async {
+                Ok(resource("application/json", 8))
+            })
+            .await
+            .unwrap();
+        assert!(
+            cache
+                .insert(key.clone(), resource("application/json", 32))
+                .await
+        );
+
+        let value = cache.get(&key).await.expect("entry should still be there");
+        assert_eq!(value.data.len(), 32);
+    }
+
+    /// Without a TTL reset the periodic preload refresh would be a no-op for
+    /// entries that are still cached.
+    #[tokio::test]
+    async fn insert_resets_the_ttl() {
+        let cache = ResourceCache::with_params(2, 1024 * 1024, 1024 * 1024);
+        let key = "gh/o/r@HEAD/x.json".to_string();
+
+        cache
+            .insert(key.clone(), resource("application/json", 8))
+            .await;
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        cache
+            .insert(key.clone(), resource("application/json", 8))
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(1_000)).await;
+        cache.run_pending_tasks().await;
+        assert!(
+            cache.get(&key).await.is_some(),
+            "only 1s since the last write, so the renewed entry must survive"
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_rejects_oversized_entries() {
+        let cache = ResourceCache::with_params(60, 1024 * 1024, 64);
+        let key = "npm/big@1/big.bin".to_string();
+
+        assert!(
+            !cache
+                .insert(key.clone(), resource("application/octet-stream", 128))
+                .await
+        );
+        cache.run_pending_tasks().await;
+        assert!(cache.get(&key).await.is_none());
     }
 
     /// 回源失败不应被缓存。

@@ -7,10 +7,12 @@ pub mod allowlist;
 pub mod cache;
 pub mod env;
 pub mod jsdelivr;
+pub mod preload;
 pub mod server;
 use cache::Cache;
 use env::Environment;
 use jsdelivr::Jsdelivr;
+use preload::Preload;
 
 /// 需要按逗号拆成列表的配置项。
 ///
@@ -39,6 +41,8 @@ pub struct Config {
     pub cache: Cache,
     #[serde(default)]
     pub jsdelivr: Jsdelivr,
+    #[serde(default)]
+    pub preload: Preload,
     #[serde(default)]
     pub server: server::Server,
 }

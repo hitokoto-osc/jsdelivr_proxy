@@ -37,3 +37,38 @@ max_entry_size_mb = 16
 #   "hitokoto-osc"                  匹配该 owner 的全部仓库
 #   "hitokoto-osc/sentences-bundle" 精确匹配单个仓库
 # gh = ["hitokoto-osc", "hitokoto-osc/sentences-bundle"]
+
+# 资源预载（缓存预热）：把指定仓库 / 包的资源在启动时灌进缓存。
+# 整节缺省 / targets 为空 = 不预载（默认）。详见 README。
+#
+# 预热的缓存键就是客户端请求的路径 `<provider>/<name>@<version>/<file>`，
+# 下面的 version 会原样进键，必须和客户端实际请求的版本串一致。
+# [preload]
+# 省略 = 有 targets 就开
+# enabled = true
+# 列文件清单用的数据 API，与 jsdelivr.mirror 是两个服务（镜像不提供 /v1/packages）
+# data_api = "https://data.jsdelivr.com"
+# 省略 = cache.ttl_secs 的 3/4；必须小于 TTL，否则预热的条目会在两轮之间过期
+# refresh_interval_secs = 5400
+# concurrency = 4
+# max_files = 512
+
+# 版本省略时 gh 用 HEAD（仓库默认分支）、npm 用 latest；
+# 内容默认取全部前端资源（js/css/json/html/wasm/图片/字体），并跳过 . 开头的隐藏目录。
+# [[preload.targets]]
+# provider = "gh"
+# name = "hitokoto-osc/sentences-bundle"
+
+# 指定版本与内容。gh 的 "latest" 会被归一成 "HEAD"，要最新 tag 请写 tag 或 semver 范围。
+# [[preload.targets]]
+# provider = "gh"
+# name = "hitokoto-osc/sentences-bundle"
+# version = "master"
+# 覆盖默认扩展名集合；写 ["*"] 则不按扩展名过滤
+# extensions = ["json"]
+# 路径前缀，按片段整体比较：/dist 命中 /dist/vue.js，但不命中 /dist-old/x.js
+# include = ["/sentences", "/categories.json"]
+# exclude 优先级高于 include
+# exclude = ["/sentences/legacy"]
+# include_hidden = false
+# max_files = 200

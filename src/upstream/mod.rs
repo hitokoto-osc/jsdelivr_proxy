@@ -44,6 +44,10 @@ fn user_agent() -> &'static str {
     }
 }
 
+pub fn client() -> &'static Client {
+    &CLIENT
+}
+
 pub fn mirror() -> &'static str {
     match CONFIG.jsdelivr.mirror.as_deref() {
         Some(v) => v,

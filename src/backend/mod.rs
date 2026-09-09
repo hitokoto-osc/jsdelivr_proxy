@@ -1,4 +1,6 @@
-mod controller;
+// `pub` so that `preload` can reuse the allowlist check rather than
+// reimplementing jsDelivr path parsing.
+pub mod controller;
 
 use crate::CONFIG;
 use anyhow::Context;
