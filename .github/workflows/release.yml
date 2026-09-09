@@ -148,7 +148,7 @@ jobs:
           echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           # 同一份构建同时发布到 Docker Hub 与 GitHub Packages(ghcr.io)。
           # ghcr 的仓库名直接取 github.repository，因此镜像名随仓库自动跟随，
