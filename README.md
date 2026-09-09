@@ -122,6 +122,36 @@ JSDRLIVR_PROXY_JSDELIVR_ALLOWLIST_NPM="vue,@hitokoto" ./jsdelivr_proxy
 > 环境变量方式仅在**不使用 `-c <配置文件>`** 时生效（`-c` 会关掉环境变量 source，
 > 这是既有行为）。列表键的逗号拆分在 `src/conf/mod.rs` 的 `LIST_VALUED_KEYS` 中登记。
 
+## Referer 校验
+
+可选校验资源请求的来源域名，默认关闭。启用后在读取缓存和回源之前校验，
+不符合规则的请求返回 HTTP 403；管理接口、Webhook、首页和 `/about` 等独立路由不受影响。
+
+```toml
+[jsdelivr.referer_check]
+enabled = true
+allow_empty = false
+domains = ["example.com", "www.example.com"]
+```
+
+`domains` 只填写域名，不带协议、端口、路径或通配符。仅接受 HTTP/HTTPS Referer，
+提取主机名后进行不区分大小写的完整匹配，忽略端口与路径；子域名需要单独列出。
+例如 `example.com` 不会放行 `sub.example.com` 或 `example.com.evil.test`。
+启用校验但域名列表为空时，所有非空 Referer 都会被拒绝。
+
+`allow_empty` 默认 `false`；设置为 `true` 时允许缺少 Referer 头、空字符串或纯空白值，
+但不会放行格式无效、重复或域名不匹配的 Referer。
+启用时响应添加 `Vary: Referer`，让下游缓存按 Referer 区分响应。
+此配置独立于用于回源的 `jsdelivr.referer`。
+
+| 配置文件（`[jsdelivr.referer_check]`） | 环境变量 | 默认值 |
+| --- | --- | --- |
+| `enabled` | `JSDRLIVR_PROXY_JSDELIVR__REFERER_CHECK__ENABLED` | `false` |
+| `allow_empty` | `JSDRLIVR_PROXY_JSDELIVR__REFERER_CHECK__ALLOW_EMPTY` | `false` |
+| `domains` | `JSDRLIVR_PROXY_JSDELIVR__REFERER_CHECK__DOMAINS` | `[]` |
+
+环境变量中的域名用逗号分隔；使用 `-c <配置文件>` 时不读取环境变量配置。
+
 ## 资源预载（Preload）
 
 冷启动之后第一个请求每个资源的人，都要替所有人吃一次回源延迟（实测 gcore 回源

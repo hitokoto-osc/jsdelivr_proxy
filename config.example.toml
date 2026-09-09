@@ -60,6 +60,15 @@ compression = "zstd"
 #   "hitokoto-osc/sentences-bundle" 精确匹配单个仓库
 # gh = ["hitokoto-osc", "hitokoto-osc/sentences-bundle"]
 
+# Incoming Referer validation; independent of the upstream jsdelivr.referer.
+# [jsdelivr.referer_check]
+# enabled = false
+# Missing or blank Referer is rejected unless allow_empty is true.
+# allow_empty = false
+# Exact, case-insensitive host matching; list subdomains separately.
+# Use hostnames only, without schemes, ports, paths or wildcards.
+# domains = ["example.com", "www.example.com"]
+
 # 资源预载（缓存预热）：把指定仓库 / 包的资源在启动时灌进缓存。
 # 整节缺省 / targets 为空 = 不预载（默认）。详见 README。
 #
