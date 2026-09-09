@@ -19,11 +19,14 @@
 //! pool: at these codec settings a typical jsDelivr asset stays well under a
 //! millisecond, which is cheaper than a trip through `spawn_blocking`.
 
+pub mod purge;
+
 use crate::conf::cache::{Cache as CacheConfig, Compression};
 use crate::CONFIG;
 use brotli::enc::BrotliEncoderParams;
 use bytes::Bytes;
 use moka::future::Cache as MokaCache;
+use serde::Serialize;
 use std::future::Future;
 use std::io;
 use std::sync::Arc;
@@ -160,6 +163,38 @@ pub struct ResourceCache {
     /// what the entry costs rather than how big the file was upstream.
     max_entry_size: usize,
     compression: Compression,
+    /// Kept only so that [`ResourceCache::stats`] can report the limits this
+    /// cache was actually built with, which is not necessarily what `CONFIG`
+    /// says: tests build caches with their own parameters.
+    ttl_secs: u64,
+    max_capacity_bytes: u64,
+}
+
+/// Aggregate figures for the admin panel. Byte counts unless noted.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct CacheStats {
+    pub entry_count: u64,
+    /// Total as stored, i.e. after compression. This is what counts against
+    /// `max_capacity_bytes`.
+    pub stored_bytes: u64,
+    /// Total of the bodies as clients receive them, so `raw_bytes` over
+    /// `stored_bytes` is the compression ratio actually achieved.
+    pub raw_bytes: u64,
+    pub ttl_secs: u64,
+    pub max_capacity_bytes: u64,
+    pub max_entry_size_bytes: usize,
+    pub compression: Compression,
+}
+
+/// One row of the cache listing. Carries sizes only; no body is decompressed
+/// to produce it.
+#[derive(Debug, Clone, Serialize)]
+pub struct CacheEntryInfo {
+    pub key: String,
+    pub mime: String,
+    pub stored_bytes: usize,
+    pub raw_bytes: usize,
+    pub compression: Compression,
 }
 
 impl ResourceCache {
@@ -192,6 +227,8 @@ impl ResourceCache {
             inner,
             max_entry_size,
             compression,
+            ttl_secs,
+            max_capacity_bytes,
         }
     }
 
@@ -288,6 +325,84 @@ impl ResourceCache {
         self.max_entry_size
     }
 
+    /// `entry_count` and `weighted_size` are estimates while maintenance is
+    /// outstanding, so pending tasks are drained first: a panel that reports a
+    /// count nothing else agrees with is worse than a slightly slower reply.
+    pub async fn stats(&self) -> CacheStats {
+        self.inner.run_pending_tasks().await;
+        let raw_bytes = self.inner.iter().map(|(_, e)| e.raw_len as u64).sum();
+        CacheStats {
+            entry_count: self.inner.entry_count(),
+            stored_bytes: self.inner.weighted_size(),
+            raw_bytes,
+            ttl_secs: self.ttl_secs,
+            max_capacity_bytes: self.max_capacity_bytes,
+            max_entry_size_bytes: self.max_entry_size,
+            compression: self.compression,
+        }
+    }
+
+    /// Every cached entry matching `prefix`, largest first.
+    pub fn entries(&self, prefix: Option<&str>) -> Vec<CacheEntryInfo> {
+        let mut entries: Vec<CacheEntryInfo> = self
+            .inner
+            .iter()
+            .filter(|(key, _)| match prefix {
+                Some(prefix) => key.starts_with(prefix),
+                None => true,
+            })
+            .map(|(key, entry)| CacheEntryInfo {
+                stored_bytes: entry.weight(key.as_str()),
+                raw_bytes: entry.raw_len,
+                mime: entry.mime.clone(),
+                compression: entry.compression,
+                key: key.to_string(),
+            })
+            .collect();
+        entries.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.stored_bytes));
+        entries
+    }
+
+    /// Removes one entry, reporting whether it was there to begin with.
+    pub async fn invalidate_key(&self, key: &str) -> bool {
+        let existed = self.inner.contains_key(key);
+        self.inner.invalidate(key).await;
+        existed
+    }
+
+    /// Removes every entry whose key starts with `prefix`, returning how many
+    /// were removed.
+    ///
+    /// This collects the matching keys and invalidates them individually
+    /// instead of using moka's `invalidate_entries_if`, which would require
+    /// `support_invalidation_closures()` on the builder — extra bookkeeping on
+    /// every insert — and only takes effect during later maintenance. One pass
+    /// over the keys at this cache's scale is the cheaper trade, and it purges
+    /// immediately.
+    pub async fn invalidate_prefix(&self, prefix: &str) -> usize {
+        let keys: Vec<String> = self
+            .inner
+            .iter()
+            .map(|(key, _)| key.to_string())
+            .filter(|key| key.starts_with(prefix))
+            .collect();
+        for key in &keys {
+            self.inner.invalidate(key).await;
+        }
+        keys.len()
+    }
+
+    /// Empties the cache, returning how many entries were dropped.
+    pub async fn clear(&self) -> u64 {
+        self.inner.run_pending_tasks().await;
+        let removed = self.inner.entry_count();
+        // `invalidate_all` is lazy; draining again makes the count reported to
+        // the caller match what a listing will show straight afterwards.
+        self.inner.invalidate_all();
+        self.inner.run_pending_tasks().await;
+        removed
+    }
+
     #[cfg(test)]
     async fn run_pending_tasks(&self) {
         self.inner.run_pending_tasks().await;
@@ -313,6 +428,26 @@ pub async fn renew(key: &str) -> bool {
 
 pub fn max_entry_size() -> usize {
     CACHE.max_entry_size()
+}
+
+pub async fn stats() -> CacheStats {
+    CACHE.stats().await
+}
+
+pub fn entries(prefix: Option<&str>) -> Vec<CacheEntryInfo> {
+    CACHE.entries(prefix)
+}
+
+pub async fn invalidate_key(key: &str) -> bool {
+    CACHE.invalidate_key(key).await
+}
+
+pub async fn invalidate_prefix(prefix: &str) -> usize {
+    CACHE.invalidate_prefix(prefix).await
+}
+
+pub async fn clear() -> u64 {
+    CACHE.clear().await
 }
 
 #[cfg(test)]
@@ -628,5 +763,88 @@ mod tests {
             stored.raw_len > limit,
             "the raw body would have been rejected"
         );
+    }
+
+    /// Populates a cache with three keys under two different prefixes.
+    async fn populated() -> ResourceCache {
+        let cache = ResourceCache::with_params(60, 1024 * 1024, 1024 * 1024, Compression::None);
+        for (key, len) in [
+            ("npm/vue@3/dist/vue.js", 300),
+            ("npm/vue@3/dist/vue.css", 100),
+            ("gh/o/r@HEAD/data.json", 200),
+        ] {
+            cache
+                .insert(key.to_string(), resource("text/plain", len))
+                .await;
+        }
+        cache.run_pending_tasks().await;
+        cache
+    }
+
+    #[tokio::test]
+    async fn stats_report_the_limits_the_cache_was_built_with() {
+        let cache = populated().await;
+        let stats = cache.stats().await;
+
+        assert_eq!(stats.entry_count, 3);
+        assert_eq!(stats.raw_bytes, 600);
+        assert_eq!(stats.ttl_secs, 60);
+        assert_eq!(stats.max_capacity_bytes, 1024 * 1024);
+        assert_eq!(stats.compression, Compression::None);
+        // Uncompressed bodies plus the key and MIME bytes of each entry.
+        assert!(stats.stored_bytes > stats.raw_bytes);
+    }
+
+    #[tokio::test]
+    async fn the_listing_is_ordered_by_size_and_filtered_by_prefix() {
+        let cache = populated().await;
+
+        let all = cache.entries(None);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].key, "npm/vue@3/dist/vue.js");
+        assert!(all[0].stored_bytes >= all[1].stored_bytes);
+        assert_eq!(all[0].raw_bytes, 300);
+
+        let filtered = cache.entries(Some("npm/vue@3/"));
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|e| e.key.starts_with("npm/vue@3/")));
+        assert!(cache.entries(Some("wp/")).is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalidating_a_key_reports_whether_it_was_cached() {
+        let cache = populated().await;
+
+        assert!(cache.invalidate_key("gh/o/r@HEAD/data.json").await);
+        assert!(!cache.invalidate_key("gh/o/r@HEAD/data.json").await);
+        assert!(!cache.invalidate_key("npm/never-cached").await);
+
+        cache.run_pending_tasks().await;
+        assert_eq!(cache.entries(None).len(), 2);
+    }
+
+    /// A prefix must match whole keys from the left, and must not take the
+    /// siblings of the packages it names with it.
+    #[tokio::test]
+    async fn a_prefix_purge_removes_exactly_its_subtree() {
+        let cache = populated().await;
+
+        assert_eq!(cache.invalidate_prefix("npm/vue@3/").await, 2);
+        cache.run_pending_tasks().await;
+
+        let remaining = cache.entries(None);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].key, "gh/o/r@HEAD/data.json");
+        assert_eq!(cache.invalidate_prefix("npm/").await, 0);
+    }
+
+    #[tokio::test]
+    async fn clearing_reports_how_many_entries_went_away() {
+        let cache = populated().await;
+
+        assert_eq!(cache.clear().await, 3);
+        assert!(cache.entries(None).is_empty());
+        assert_eq!(cache.stats().await.entry_count, 0);
+        assert_eq!(cache.clear().await, 0);
     }
 }

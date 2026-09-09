@@ -208,6 +208,104 @@ name = "hitokoto-osc/sentences-bundle"
 > `[[preload.targets]]` 是数组表，`config` 的环境变量 source 表达不了，
 > **只能写在配置文件里**；上面这些标量项才能用环境变量覆盖。
 
+## 管理面板与 Webhook
+
+**默认全部关闭**：不设置管理员 Key 时，`/admin` 与管理 API 一律返回 `503`，
+不设置 Webhook secret 时 `/webhook/cache/purge` 同样返回 `503`。
+老部署升级上来不会多出任何可访问的入口。
+
+```bash
+# 管理面板 / 管理 API（缺省即关闭）
+JSDRLIVR_PROXY_ADMIN_KEY="用一个足够长的随机串"
+# 缓存清除 Webhook（缺省即关闭），与上面是两把独立的钥匙
+JSDRLIVR_PROXY_ADMIN__WEBHOOK_SECRET="另一个随机串"
+```
+
+### 面板
+
+浏览器打开 `http://<host>:<port>/admin`，填入管理员 Key 即可看到：
+
+* **进程**：CPU 占用、常驻内存 RSS、虚拟内存、运行时长（每 5 秒采样一次）；
+* **缓存**：条目数、已占用 / 预算、原始体积与实际压缩比，以及当前 TTL 等配置；
+* **缓存条目**：按占用从大到小列出，可按前缀筛选，可单条清除、按前缀清除或清空；
+* **操作记录**：谁在什么时候从哪个地址清了什么。
+
+页面本身不含任何数据，也不加载任何外部资源；Key 只存在浏览器 `localStorage` 里，
+每次请求以 `Authorization: Bearer <key>` 发出。
+
+### 管理 API
+
+全部要求 `Authorization: Bearer <管理员 Key>`，响应沿用项目统一的
+`{status, message, data, ts}` 结构。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /admin/api/stats` | 进程与缓存汇总 |
+| `GET /admin/api/cache?prefix=&limit=&offset=` | 缓存条目列表，按占用降序；`limit` 默认 100、上限 1000 |
+| `POST /admin/api/cache/purge` | 清除缓存，请求体见下 |
+| `GET /admin/api/audit?limit=&offset=` | 操作记录，最新在前 |
+
+清除请求体**三选一**，同时给多个会被拒绝（避免「本想清一个前缀，结果清了全部」）：
+
+```jsonc
+{ "all": true }                                    // 全部
+{ "prefix": "gh/hitokoto-osc/sentences-bundle@HEAD" }  // 按前缀
+{ "keys": ["npm/vue@3.4.21/dist/vue.global.prod.js"] } // 精确若干条
+```
+
+缓存键就是客户端请求的路径，所以前缀 `gh/owner/repo@HEAD` 只清这一个版本，
+`gh/owner/repo` 则连带该仓库的所有版本。返回里的 `missed` 是「点名了但本来就不在缓存里」的条数。
+
+### Webhook
+
+```bash
+BODY='{"prefix":"gh/hitokoto-osc/sentences-bundle@HEAD"}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -r | cut -d' ' -f1)
+curl -X POST http://<host>:<port>/webhook/cache/purge \
+  -H "Content-Type: application/json" \
+  -H "X-Hub-Signature-256: sha256=$SIG" \
+  -d "$BODY"
+```
+
+请求体与管理 API 的清除接口完全一致，鉴权换成对**原始请求体**的 HMAC-SHA256 签名，
+放在 `X-Hub-Signature-256` 头里（GitHub / Gitea 的 webhook 格式，`sha256=` 前缀可省略）。
+
+之所以不复用管理员 Key：一是签名是 GitHub 这类服务唯一能配的凭证，
+二是把 secret 交给 CI 或仓库以后，它泄露也只等于「能清缓存」，不等于拿到管理员权限。
+
+> 签名校验失败**不会**写进操作记录。这个端点在校验通过前是无鉴权的，
+> 逐次记录会让任何人都能把远端审计库灌满；失败仍然以 `warn` 记进程序日志。
+
+### 操作记录存哪
+
+默认存在**进程内的环形缓冲**里（最近 500 条），重启即丢失——这保住了「一个二进制、
+零外部依赖」的默认部署形态。需要持久化时配上 Turso：
+
+```bash
+JSDRLIVR_PROXY_ADMIN_TURSO_URL="libsql://<db>-<org>.turso.io"
+JSDRLIVR_PROXY_ADMIN_TURSO_TOKEN="<turso db tokens create 生成的 token>"
+```
+
+表（`admin_audit_log`）会在启动时自动建好。启动时连不上 Turso**不会**导致启动失败，
+只会退回内存缓冲并打一条 `warn`——记不了审计日志不该让反代本身停摆。
+
+实现上没有引入官方的 `libsql` SDK：它的远程路径建在比 `reqwest` 更旧的一代 HTTP
+栈上，接进来会多出 37 个 crate，以及 rustls / tower / hyper-rustls / thiserror 各两份。
+Turso 的 `/v2/pipeline` 是有正式文档的稳定 JSON 协议，直接用现成的 `reqwest` 说这个协议，
+依赖树一个字节都没变。
+
+### 完整配置项
+
+| 配置文件（`[admin]`） | 环境变量 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `key` | `JSDRLIVR_PROXY_ADMIN_KEY` | 空 = 关闭 | 管理面板与管理 API 的 Key |
+| `webhook_secret` | `JSDRLIVR_PROXY_ADMIN__WEBHOOK_SECRET` | 空 = 关闭 | Webhook 的 HMAC secret |
+| `turso.url` | `JSDRLIVR_PROXY_ADMIN_TURSO_URL` | 空 = 用内存 | Turso 数据库地址，`libsql://` 会被改写成 `https://` |
+| `turso.token` | `JSDRLIVR_PROXY_ADMIN_TURSO_TOKEN` | 空 = 用内存 | Turso 访问 token |
+
+> `webhook_secret` 字段名自身带下划线，所以层级必须用**双下划线**分隔，
+> 写成 `JSDRLIVR_PROXY_ADMIN_WEBHOOK_SECRET` 会被解析成 `admin.webhook.secret` 而静默失效。
+
 ## Docker 部署
 
 ### 预构建镜像

@@ -8,6 +8,23 @@ host = "0.0.0.0"
 # 默认 28319；docker-compose 通过 JSDRLIVR_PROXY_SERVER_PORT 覆盖为 8000
 port = 28319
 
+# 管理面板 / 管理 API / 缓存清除 Webhook。
+# 整节缺省 = 全部关闭（默认）：/admin 与管理 API 返回 503，webhook 也返回 503。
+# [admin]
+# 管理面板与管理 API 的 Key，留空 = 关闭。请求头 Authorization: Bearer <key>
+# key = ""
+# Webhook 的 HMAC-SHA256 secret，留空 = 关闭。与 key 是两把独立的钥匙：
+# secret 交给 CI / 仓库以后泄露，只等于「能清缓存」，不等于拿到管理员权限。
+# 校验的是 X-Hub-Signature-256（GitHub / Gitea 格式），签的是原始请求体。
+# webhook_secret = ""
+
+# 操作记录的持久化存储。整节缺省 = 存在进程内环形缓冲（最近 500 条），重启即丢。
+# 表 admin_audit_log 会在启动时自动建好；启动时连不上不会导致启动失败，只会退回内存。
+# [admin.turso]
+# libsql:// 与 turso:// 会被改写成 https://；http:// 保留（自建 sqld 用）
+# url = "libsql://<db>-<org>.turso.io"
+# token = ""
+
 # 进程内缓存（moka）：无外部依赖，重启即失效
 [cache]
 # 缓存存活时间（秒），默认 7200（2 小时）
