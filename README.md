@@ -8,6 +8,26 @@ A lightweight JSDelivr Proxy with cache.
 HTTP 层基于 [axum](https://github.com/tokio-rs/axum) 0.8 + tower-http，
 缓存基于 [moka](https://github.com/moka-rs/moka) 0.12（`future` 特性）。
 
+## Gravatar 头像代理
+
+请求 `/avatar/<hash>?s=200&d=identicon` 即可代理头像；支持的参数见
+[Gravatar 官方文档](https://docs.gravatar.com/sdk/images/)。
+
+```toml
+[gravatar]
+upstream = "https://www.gravatar.com"
+```
+
+可通过 `JSDRLIVR_PROXY_GRAVATAR_UPSTREAM` 环境变量指定上游。
+上游为基础 URL，可包含路径前缀；请求会在其后追加 `/avatar/<hash>` 并透传查询参数。
+省略配置时使用上面的默认值。
+
+Gravatar 与 jsDelivr 共用 `[cache]` 配置及缓存实例，包括 TTL、容量预算、内容去重、
+压缩、流式返回和并发合并回源；只有成功且完整下载的响应才会缓存。
+头像缓存键为 `avatar/<hash>` 加原始查询字符串，不同尺寸或默认头像参数分别缓存。
+可在现有管理面板查看，或按 `avatar/` 前缀清除所有头像缓存。
+`jsdelivr.allowlist` 和 `jsdelivr.referer_check` 仅作用于 jsDelivr 请求。
+
 ## 缓存
 
 * **TTL 2 小时**：每个 path 独立过期，命中不续期；预加载刷新只续期对应 path。

@@ -1,3 +1,4 @@
+pub mod gravatar;
 pub mod jsdelivr;
 use crate::utils::response::success;
 use crate::utils::response::APIResponse;
