@@ -4,14 +4,16 @@
 //! cache / metrics / audit modules, serialise. None of them reach into moka or
 //! sysinfo directly.
 
-use std::net::SocketAddr;
+use std::{convert::Infallible, net::SocketAddr};
 
 use axum::extract::{ConnectInfo, Query};
 use axum::http::header;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::audit::{self, Actor, Record};
 use crate::backend::auth::{AdminAuth, AuthError};
@@ -42,12 +44,59 @@ pub async fn panel() -> Response {
 }
 
 pub async fn stats(_: AdminAuth) -> APIResponse<Value> {
-    success(json!({
+    success(stats_data().await)
+}
+
+async fn stats_data() -> Value {
+    json!({
         "process": metrics::snapshot(),
+        "requests": metrics::requests::snapshot(),
         "cache": cache::stats().await,
         "audit": { "backend": audit::backend_name() },
         "webhook": { "enabled": CONFIG.admin.is_webhook_enabled() },
-    }))
+    })
+}
+
+pub async fn events(_: AdminAuth, Query(query): Query<ListQuery>) -> Response {
+    let mut samples = metrics::subscribe();
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(1);
+    tokio::spawn(async move {
+        let updates = async {
+            loop {
+                let cache = cache_list(
+                    AdminAuth,
+                    Query(ListQuery {
+                        prefix: query.prefix.clone(),
+                        limit: query.limit,
+                        offset: query.offset,
+                    }),
+                )
+                .await
+                .1;
+                let audit = audit_list(AdminAuth, Query(ListQuery::default())).await.1;
+                let data = json!({ "stats": stats_data().await, "cache": cache, "audit": audit });
+                let event = Event::default().event("snapshot").json_data(data).unwrap();
+                if sender.send(Ok(event)).await.is_err() || samples.changed().await.is_err() {
+                    break;
+                }
+                samples.borrow_and_update();
+            }
+        };
+        // Dropping the body must also cancel database work and release the
+        // sampling subscription, even if an update is still being assembled.
+        tokio::select! {
+            _ = sender.closed() => {},
+            _ = updates => {},
+        }
+    });
+    (
+        [
+            (header::CACHE_CONTROL, "no-store, no-transform"),
+            (header::HeaderName::from_static("x-accel-buffering"), "no"),
+        ],
+        Sse::new(ReceiverStream::new(receiver)).keep_alive(KeepAlive::default()),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Default, Deserialize)]

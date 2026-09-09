@@ -295,7 +295,8 @@ JSDRLIVR_PROXY_ADMIN__WEBHOOK_SECRET="另一个随机串"
 
 浏览器打开 `http://<host>:<port>/admin`，填入管理员 Key 即可看到：
 
-* **进程**：CPU 占用、常驻内存 RSS、虚拟内存、运行时长（每 5 秒采样一次）；
+* **进程**：CPU 占用、常驻内存 RSS、虚拟内存、运行时长（有管理页面连接时每 5 秒采样一次，多页面共享采样）；
+* **请求**：启动以来非管理请求总数、请求速率和响应状态分类，附 RSS 与区间请求数图表（最近 120 点）；
 * **缓存**：条目数、已占用 / 预算、原始体积与实际压缩比，以及当前 TTL 等配置；
 * **缓存条目**：按占用从大到小列出，可按前缀筛选，可单条清除、按前缀清除或清空；
 * **操作记录**：谁在什么时候从哪个地址清了什么。
@@ -303,14 +304,28 @@ JSDRLIVR_PROXY_ADMIN__WEBHOOK_SECRET="另一个随机串"
 页面本身不含任何数据，也不加载任何外部资源；Key 只存在浏览器 `localStorage` 里，
 每次请求以 `Authorization: Bearer <key>` 发出。
 
+面板使用 SSE 每 5 秒推送汇总、缓存列表及操作记录；页面隐藏或关闭时断开，
+最后一个订阅断开后停止进程采样。网络中断后每 3 秒重连，20 秒未收到数据也会重连；
+鉴权失败时停止重试。图表仅保留当前页面内存中的历史，断线期间不计算请求速率。
+请求计数始终运行，重启归零；不包含管理路由以及 CDN 命中后未回源的请求。
+总数在收到请求时累加，1xx–5xx 分类在响应头生成时累加，因此尚未生成响应的请求不在状态分类中。
+
+通过 CDN / 反向代理部署时，需为 `/admin/api/*` 禁用缓存，并转发 `Authorization`。
+事件流要求支持流式响应并关闭响应缓冲；服务端已发送 `Cache-Control: no-store, no-transform`
+和 `X-Accel-Buffering: no`，但 CDN 配置可能覆盖它们。空闲超时应大于 20 秒，
+总连接时长限制到达后页面会重连；不支持流式响应的 CDN 应让管理路径直连源站。
+例如 [CloudFront](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/DownloadDistValuesOrigin.html)
+分别提供响应包间隔超时与完整响应超时，不能仅凭支持 HTTP 就认定能持续推送。
+
 ### 管理 API
 
 全部要求 `Authorization: Bearer <管理员 Key>`，响应沿用项目统一的
-`{status, message, data, ts}` 结构。
+`{status, message, data, ts}` 结构（事件流除外）。
 
 | 方法与路径 | 说明 |
 | --- | --- |
-| `GET /admin/api/stats` | 进程与缓存汇总 |
+| `GET /admin/api/stats` | 进程最近采样、请求统计与缓存汇总；本接口不启动采样 |
+| `GET /admin/api/events?prefix=&limit=&offset=` | SSE `snapshot` 事件，包含 `stats` 及统一响应结构的 `cache`、`audit`；查询参数用于缓存列表 |
 | `GET /admin/api/cache?prefix=&limit=&offset=` | 缓存条目列表，按占用降序；`limit` 默认 100、上限 1000 |
 | `POST /admin/api/cache/purge` | 清除缓存，请求体见下 |
 | `GET /admin/api/audit?limit=&offset=` | 操作记录，最新在前 |
