@@ -6,7 +6,7 @@
 //!   `version` must match what clients actually request: warming `@HEAD` does
 //!   not serve a request for `@master`.
 //! * Warming has to repeat. Preloaded entries share the normal TTL and
-//!   [`crate::cache::get_or_fetch`] does not renew on a hit, so refreshes go
+//!   [`crate::cache::ResourceCache::get_encoded`] does not renew on a hit, so refreshes go
 //!   through [`crate::cache::insert`], which resets the TTL.
 //! * A refresh is not a re-download. The listing carries a SHA-256 per file;
 //!   when it is unchanged the cached value is simply written back.

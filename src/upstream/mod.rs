@@ -75,21 +75,27 @@ fn convert_url(base: &str, path: &str) -> Result<Url, UpstreamError> {
 /// `path` is a jsDelivr path without a leading slash, e.g.
 /// `gh/hitokoto-osc/sentences-bundle@HEAD/categories.json`.
 pub async fn fetch(path: &str) -> Result<CachedResource, UpstreamError> {
-    let response = CLIENT
-        .get(convert_url(mirror(), path)?)
-        .header("Referer", referer())
-        .send()
-        .await?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(UpstreamError::RequestStatusCheck(status.as_u16()));
-    }
+    let response = fetch_response(path).await?;
     let mime: String = match response.headers().get(reqwest::header::CONTENT_TYPE) {
         Some(value) => value.to_str()?.to_string(),
         None => "text/plain".to_string(),
     };
     let data: Bytes = response.bytes().await?;
     Ok(CachedResource { mime, data })
+}
+
+pub async fn fetch_response(path: &str) -> Result<reqwest::Response, UpstreamError> {
+    let response = CLIENT
+        .get(convert_url(mirror(), path)?)
+        .header("Referer", referer())
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .send()
+        .await?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(UpstreamError::RequestStatusCheck(status.as_u16()));
+    }
+    Ok(response)
 }
 
 #[cfg(test)]

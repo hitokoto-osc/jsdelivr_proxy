@@ -12,12 +12,8 @@
 //!   不再共享。回源到 jsDelivr 是幂等的，所以这只影响回源次数，不影响正确性。
 //!
 //! Bodies are stored compressed, with the codec picked at startup from
-//! `[cache] compression` ([`Compression`], zstd by default). That trades CPU on
-//! every cache *hit* — a hit now decompresses into a fresh allocation instead of
-//! handing back a refcounted slice — for several times more entries within the
-//! same byte budget. Both run inline on the async task rather than on a blocking
-//! pool: at these codec settings a typical jsDelivr asset stays well under a
-//! millisecond, which is cheaper than a trip through `spawn_blocking`.
+//! `[cache] compression` ([`Compression`], zstd by default). Compatible clients
+//! receive the stored bytes directly; other clients pay the cost of decoding.
 
 pub mod purge;
 
@@ -27,11 +23,15 @@ use brotli::enc::BrotliEncoderParams;
 use bytes::Bytes;
 use moka::future::Cache as MokaCache;
 use serde::Serialize;
+use std::collections::HashMap;
+#[cfg(test)]
 use std::future::Future;
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
+#[cfg(test)]
 use thiserror::Error;
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tracing::{debug, warn};
 
 lazy_static! {
@@ -59,9 +59,9 @@ pub struct CachedResource {
     pub data: Bytes,
 }
 
+#[cfg(test)]
 #[derive(Debug, Error)]
 pub enum CacheError<E> {
-    /// moka hands the same `Arc` to every request coalesced onto one fetch.
     #[error("{0}")]
     Fetch(Arc<E>),
     /// Only reachable if a stored body is corrupt: this process compressed it
@@ -169,8 +169,10 @@ impl CacheValue {
     }
 }
 
+#[derive(Clone)]
 pub struct ResourceCache {
     inner: MokaCache<CacheKey, CacheValue>,
+    pending: Arc<Mutex<HashMap<String, Weak<AsyncMutex<()>>>>>,
     /// 单条目字节上限：超过则不缓存（但仍然正常返回给客户端）。
     /// Measured on the stored body, i.e. after compression, so the limit caps
     /// what the entry costs rather than how big the file was upstream.
@@ -245,6 +247,7 @@ impl ResourceCache {
             .build();
         ResourceCache {
             inner,
+            pending: Arc::new(Mutex::new(HashMap::new())),
             max_entry_size,
             compression,
             ttl_secs,
@@ -263,7 +266,14 @@ impl ResourceCache {
         let body_key = CacheKey::Body(checksum);
         let value = match self.inner.get(&body_key).await {
             Some(value) => value,
-            None => CacheValue::Body(CacheEntry::encode(resource.data, self.compression)),
+            None => {
+                let codec = self.compression;
+                let body =
+                    tokio::task::spawn_blocking(move || CacheEntry::encode(resource.data, codec))
+                        .await
+                        .expect("cache compression task panicked");
+                CacheValue::Body(body)
+            }
         };
         let size = path.weight(&CacheKey::Path(key.to_string())) + value.weight(&body_key);
         let cacheable = size <= self.max_entry_size;
@@ -291,6 +301,49 @@ impl ResourceCache {
         (path, body, false)
     }
 
+    pub async fn lock_fetch(&self, key: &str) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut pending = self.pending.lock().expect("pending fetch lock poisoned");
+            pending.retain(|_, lock| lock.strong_count() > 0);
+            match pending.get(key).and_then(Weak::upgrade) {
+                Some(lock) => lock,
+                None => {
+                    let lock = Arc::new(AsyncMutex::new(()));
+                    pending.insert(key.to_string(), Arc::downgrade(&lock));
+                    lock
+                }
+            }
+        };
+        lock.lock_owned().await
+    }
+
+    pub async fn get_encoded(
+        &self,
+        key: &str,
+        accepts: impl Fn(Compression) -> bool,
+    ) -> io::Result<Option<(CachedResource, Compression)>> {
+        let path_key = CacheKey::Path(key.to_string());
+        let Some(CacheValue::Path { mime, checksum }) = self.inner.get(&path_key).await else {
+            return Ok(None);
+        };
+        let Some(CacheValue::Body(body)) = self.inner.get(&CacheKey::Body(checksum)).await else {
+            self.inner.invalidate(&path_key).await;
+            return Ok(None);
+        };
+        if accepts(body.compression) {
+            Ok(Some((
+                CachedResource {
+                    mime,
+                    data: body.body,
+                },
+                body.compression,
+            )))
+        } else {
+            Ok(Some((body.decode(mime)?, Compression::None)))
+        }
+    }
+
+    #[cfg(test)]
     pub async fn get_or_fetch<F, E>(
         &self,
         key: String,
@@ -300,40 +353,22 @@ impl ResourceCache {
         F: Future<Output = Result<CachedResource, E>>,
         E: Send + Sync + 'static,
     {
-        let path_key = CacheKey::Path(key.clone());
-        let mut init = Some(init);
-        loop {
-            let mut fetched = None;
-            let entry = self
-                .inner
-                .entry(path_key.clone())
-                .or_try_insert_with(async {
-                    let resource = init.take().expect("a request fetches at most once").await?;
-                    let (path, body, cacheable) = self.prepare(&key, resource).await;
-                    fetched = Some((body, cacheable));
-                    Ok::<_, E>(path)
-                })
-                .await
-                .map_err(CacheError::Fetch)?;
-            let CacheValue::Path { mime, checksum } = entry.into_value() else {
-                unreachable!()
-            };
-            if let Some((body, cacheable)) = fetched {
-                if !cacheable {
-                    self.inner.invalidate(&path_key).await;
-                }
-                return body.decode(mime).map_err(CacheError::Decompress);
-            }
-            if let Some(CacheValue::Body(body)) = self.inner.get(&CacheKey::Body(checksum)).await {
-                return body.decode(mime).map_err(CacheError::Decompress);
-            }
-            // Capacity eviction can remove content before its path expires.
-            self.inner.invalidate(&path_key).await;
+        let _guard = self.lock_fetch(&key).await;
+        if let Some((resource, _)) = self
+            .get_encoded(&key, |_| false)
+            .await
+            .map_err(CacheError::Decompress)?
+        {
+            return Ok(resource);
         }
+        let resource = init
+            .await
+            .map_err(|error| CacheError::Fetch(Arc::new(error)))?;
+        self.insert(key, resource.clone()).await;
+        Ok(resource)
     }
 
-    /// Preload refresh must replace the mapping and restart its TTL even on a
-    /// hit; ordinary requests through `get_or_fetch` must not do either.
+    /// Preload refresh must replace the mapping and restart its TTL even on a hit.
     pub async fn insert(&self, key: String, value: CachedResource) -> bool {
         let (path, _, cacheable) = self.prepare(&key, value).await;
         if cacheable {
@@ -524,13 +559,8 @@ impl ResourceCache {
     }
 }
 
-/// 全局缓存实例上的 [`ResourceCache::get_or_fetch`]。
-pub async fn get_or_fetch<F, E>(key: String, init: F) -> Result<CachedResource, CacheError<E>>
-where
-    F: Future<Output = Result<CachedResource, E>>,
-    E: Send + Sync + 'static,
-{
-    CACHE.get_or_fetch(key, init).await
+pub fn shared() -> ResourceCache {
+    CACHE.clone()
 }
 
 pub async fn insert(key: String, value: CachedResource) -> bool {
