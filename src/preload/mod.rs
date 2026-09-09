@@ -306,14 +306,11 @@ enum Outcome {
 }
 
 async fn warm_file(file: &Planned, previous_hash: Option<&str>) -> Outcome {
-    // Unchanged and still cached: writing the old value back renews the TTL.
+    // Unchanged and still cached: resetting the TTL is all it takes.
     if let (Some(hash), Some(previous)) = (file.hash.as_deref(), previous_hash) {
-        if hash == previous {
-            if let Some(existing) = cache::get(&file.key).await {
-                cache::insert(file.key.clone(), existing).await;
-                debug!(key = %file.key, "preload renewed an unchanged entry without refetching");
-                return Outcome::Renewed;
-            }
+        if hash == previous && cache::renew(&file.key).await {
+            debug!(key = %file.key, "preload renewed an unchanged entry without refetching");
+            return Outcome::Renewed;
         }
     }
 

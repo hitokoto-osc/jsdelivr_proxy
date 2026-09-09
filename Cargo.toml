@@ -17,6 +17,7 @@ rustc_version = "0.4"
 [dependencies]
 anyhow = "1.0.66"
 axum = "0.8"
+brotli = "9.0.0"
 bytes = { version = "1.2.1", features = ["serde"] }
 chrono = { version = "0.4.22", features = ["serde"] }
 clap = { version = "4.0.20", features = ["derive", "env"] }
@@ -37,6 +38,7 @@ tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 url = "2.3.1"
 uuid = { version = "1.2.1", features = ["v1", "v4"] }
+zstd = "0.14.0"
 
 # 仅 Linux（musl 静态构建）需要 vendored OpenSSL；Windows/macOS 分别走 schannel / Security Framework
 [target.'cfg(target_os = "linux")'.dependencies]
