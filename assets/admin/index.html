@@ -85,6 +85,7 @@
       .status { font-size: 13px; }
       .status.ok { color: var(--ok); }
       .status.error { color: var(--danger); }
+      canvas { display: block; width: 100%; height: 180px; }
       .empty { color: var(--muted); padding: 12px 0; }
     </style>
   </head>
@@ -126,6 +127,28 @@
           <p class="muted" id="cache-config">—</p>
         </section>
       </div>
+
+      <section class="card">
+        <h2>请求统计</h2>
+        <div class="metrics">
+          <div class="metric"><div class="label">累计请求</div><div class="value" id="requests">—</div></div>
+          <div class="metric"><div class="label">请求 / 秒</div><div class="value" id="rps">—</div></div>
+          <div class="metric"><div class="label">2xx / 3xx</div><div class="value" id="responses-ok">—</div></div>
+          <div class="metric"><div class="label">4xx / 5xx</div><div class="value" id="responses-error">—</div></div>
+        </div>
+        <p class="muted">统计到达本服务的非管理请求（含拒绝和错误），重启归零；CDN 命中未回源的请求不计入。状态码在响应头生成时计数。</p>
+      </section>
+      <div class="grid">
+        <section class="card">
+          <h2>常驻内存 RSS</h2>
+          <canvas id="memory-chart" role="img" aria-label="常驻内存趋势"></canvas>
+        </section>
+        <section class="card">
+          <h2>区间请求数</h2>
+          <canvas id="requests-chart" role="img" aria-label="相邻采样之间的请求数趋势"></canvas>
+        </section>
+      </div>
+      <p class="muted">图表保留当前页面最近 120 个采样点，正常连接时每 5 秒更新。</p>
 
       <section class="card">
         <h2>缓存路径</h2>
@@ -185,11 +208,16 @@
       "use strict";
 
       const STORAGE_KEY = "jsdelivr_proxy_admin_key";
-      const STATS_INTERVAL_MS = 5000;
+      const HISTORY_LIMIT = 120;
 
       const $ = (id) => document.getElementById(id);
       let adminKey = "";
-      let timer = null;
+      let connection = null;
+      let reconnectTimer = null;
+      let previousRequests = null;
+      let lastProcessSample = 0;
+      const memoryHistory = [];
+      const requestHistory = [];
 
       // localStorage throws in some privacy modes; the panel still works, the
       // key just has to be typed again after a reload.
@@ -240,6 +268,7 @@
       async function api(path, options) {
         const response = await fetch(path, {
           ...options,
+          cache: "no-store",
           headers: {
             "Content-Type": "application/json",
             Authorization: "Bearer " + adminKey,
@@ -253,7 +282,70 @@
         return body.data;
       }
 
+      function drawChart(id, points, format) {
+        const canvas = $(id);
+        const width = canvas.clientWidth;
+        const height = 180;
+        const scale = window.devicePixelRatio || 1;
+        canvas.width = width * scale;
+        canvas.height = height * scale;
+        const ctx = canvas.getContext("2d");
+        ctx.scale(scale, scale);
+        if (!points.length) return;
+        const colors = getComputedStyle(document.documentElement);
+        const max = Math.max(1, ...points.map((point) => point.value));
+        ctx.fillStyle = colors.getPropertyValue("--muted");
+        ctx.font = "12px system-ui";
+        ctx.fillText(format(max), 4, 14);
+        ctx.fillText("0", 4, height - 24);
+        const first = points[0].time;
+        const last = points[points.length - 1].time;
+        ctx.fillText(new Date(first).toLocaleTimeString(), 4, height - 4);
+        ctx.textAlign = "right";
+        ctx.fillText(new Date(last).toLocaleTimeString(), width - 4, height - 4);
+        ctx.strokeStyle = colors.getPropertyValue("--accent");
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        points.forEach((point, i) => {
+          const x = 8 + (point.time - first) / Math.max(1, last - first) * (width - 16);
+          const y = 24 + (1 - point.value / max) * (height - 56);
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        canvas.setAttribute("aria-label", `最新值 ${format(points[points.length - 1].value)}，${points.length} 个采样点`);
+      }
+
+      function drawCharts() {
+        drawChart("memory-chart", memoryHistory, bytes);
+        drawChart("requests-chart", requestHistory, (value) => value.toLocaleString() + " 次");
+      }
+
+      function recordMetrics(data) {
+        const p = data.process;
+        const r = data.requests;
+        $("requests").textContent = r.total.toLocaleString();
+        $("responses-ok").textContent = r.statuses[1].toLocaleString() + " / " + r.statuses[2].toLocaleString();
+        $("responses-error").textContent = r.statuses[3].toLocaleString() + " / " + r.statuses[4].toLocaleString();
+        if (p.sampled_at > lastProcessSample) {
+          memoryHistory.push({ time: p.sampled_at, value: p.memory_bytes });
+          lastProcessSample = p.sampled_at;
+        }
+        if (previousRequests && r.sampled_at > previousRequests.sampled_at && r.total >= previousRequests.total) {
+          const count = r.total - previousRequests.total;
+          $("rps").textContent = (count * 1000 / (r.sampled_at - previousRequests.sampled_at)).toFixed(2);
+          requestHistory.push({ time: r.sampled_at, value: count });
+        } else {
+          $("rps").textContent = "—";
+        }
+        previousRequests = r;
+        if (memoryHistory.length > HISTORY_LIMIT) memoryHistory.shift();
+        if (requestHistory.length > HISTORY_LIMIT) requestHistory.shift();
+        drawCharts();
+      }
+
       function renderStats(data) {
+        recordMetrics(data);
         const p = data.process;
         const c = data.cache;
         const cores = p.cpu_count ? ` / ${p.cpu_count} 核` : "";
@@ -357,16 +449,6 @@
         renderAudit(await api("/admin/api/audit"));
       }
 
-      async function refreshAll() {
-        try {
-          await Promise.all([loadStats(), loadCache(), loadAudit()]);
-          setStatus("已连接", "ok");
-        } catch (e) {
-          setStatus(e.message, "error");
-          stopPolling();
-        }
-      }
-
       async function purge(scope) {
         const label = scope.all ? "全部缓存" : scope.prefix ? `前缀 ${scope.prefix}` : scope.keys.join("、");
         if (!window.confirm(`确认清除${label}？`)) return;
@@ -384,34 +466,110 @@
         }
       }
 
-      function startPolling() {
-        stopPolling();
-        timer = setInterval(() => {
-          loadStats().catch((e) => {
-            setStatus(e.message, "error");
-            stopPolling();
-          });
-        }, STATS_INTERVAL_MS);
+      function stopUpdates() {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        if (connection) connection.abort();
+        connection = null;
       }
 
-      function stopPolling() {
-        if (timer !== null) {
-          clearInterval(timer);
-          timer = null;
+      async function startUpdates() {
+        stopUpdates();
+        if (!adminKey || document.hidden) return;
+        const controller = new AbortController();
+        connection = controller;
+        let watchdog;
+        const armWatchdog = () => {
+          clearTimeout(watchdog);
+          watchdog = setTimeout(() => controller.abort(), 20000);
+        };
+        let retry = true;
+        try {
+          setStatus("连接中…", "muted");
+          armWatchdog();
+          const response = await fetch("/admin/api/events?prefix=" + encodeURIComponent(currentPrefix()), {
+            headers: { Authorization: "Bearer " + adminKey },
+            signal: controller.signal,
+            cache: "no-store",
+          });
+          if (!response.ok) {
+            retry = ![401, 403, 503].includes(response.status);
+            throw new Error(`HTTP ${response.status}`);
+          }
+          if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+            throw new Error("服务器未返回事件流");
+          }
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error("连接已断开");
+            buffer += decoder.decode(value, { stream: true });
+            let boundary;
+            while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+              const event = buffer.slice(0, boundary);
+              buffer = buffer.slice(boundary + 2);
+              if (!event.split("\n").some((line) => /^event: ?snapshot$/.test(line))) continue;
+              const data = JSON.parse(event.split("\n").filter((line) => line.startsWith("data:"))
+                .map((line) => line.slice(5).trimStart()).join("\n"));
+              if (connection !== controller) return;
+              armWatchdog();
+              renderStats(data.stats);
+              renderCache(data.cache.data);
+              if (data.audit.status === 200) {
+                renderAudit(data.audit.data);
+                setStatus("实时更新中", "ok");
+              } else {
+                setStatus(data.audit.message, "error");
+              }
+            }
+          }
+        } catch (e) {
+          if (connection === controller) {
+            setStatus(retry ? "连接中断，3 秒后重连" : e.message, "error");
+          }
+        } finally {
+          clearTimeout(watchdog);
+          controller.abort();
+          if (connection === controller) {
+            connection = null;
+            previousRequests = null;
+            if (retry && !document.hidden) reconnectTimer = setTimeout(startUpdates, 3000);
+          }
         }
       }
 
-      async function connect() {
+      function connect() {
+        stopUpdates();
         adminKey = $("key").value.trim();
         if (!adminKey) {
           setStatus("请填写管理员 Key", "error");
           return;
         }
         storeKey(adminKey);
-        setStatus("连接中…", "muted");
-        await refreshAll();
-        if ($("status").classList.contains("ok")) startPolling();
+        previousRequests = null;
+        lastProcessSample = 0;
+        memoryHistory.length = 0;
+        requestHistory.length = 0;
+        startUpdates();
       }
+
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) {
+          stopUpdates();
+          previousRequests = null;
+          setStatus("页面隐藏，已暂停", "muted");
+        } else {
+          startUpdates();
+        }
+      });
+      window.addEventListener("pagehide", stopUpdates);
+      window.addEventListener("pageshow", () => {
+        if (adminKey && !connection) startUpdates();
+      });
+      window.addEventListener("resize", drawCharts);
+      $("prefix").addEventListener("change", () => startUpdates());
 
       $("save").addEventListener("click", connect);
       $("key").addEventListener("keydown", (e) => {
@@ -420,7 +578,7 @@
       $("refresh-cache").addEventListener("click", () => loadCache().catch((e) => setStatus(e.message, "error")));
       $("refresh-audit").addEventListener("click", () => loadAudit().catch((e) => setStatus(e.message, "error")));
       $("prefix").addEventListener("keydown", (e) => {
-        if (e.key === "Enter") loadCache().catch((err) => setStatus(err.message, "error"));
+        if (e.key === "Enter") startUpdates();
       });
       $("purge-prefix").addEventListener("click", () => {
         const prefix = currentPrefix();

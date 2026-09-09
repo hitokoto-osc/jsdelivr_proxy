@@ -1,16 +1,11 @@
-//! Process-level runtime metrics for the admin panel.
-//!
-//! CPU usage is a difference between two samples, so it cannot be produced on
-//! demand inside a request handler without either sleeping for
-//! `MINIMUM_CPU_UPDATE_INTERVAL` or reporting a meaningless zero. A background
-//! sampler keeps the latest snapshot instead and handlers just read it, which
-//! also means the panel polling faster than the sampler costs nothing.
+pub mod requests;
 
-use std::sync::{PoisonError, RwLock};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use serde::Serialize;
 use sysinfo::{get_current_pid, Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+use tokio::sync::{watch, Notify};
 use tracing::{debug, warn};
 
 use crate::utils::time::must_get_timestamp;
@@ -48,7 +43,17 @@ impl ProcessMetrics {
     }
 }
 
-static SNAPSHOT: RwLock<ProcessMetrics> = RwLock::new(ProcessMetrics::empty());
+static UPDATES: LazyLock<watch::Sender<ProcessMetrics>> = LazyLock::new(|| {
+    let (sender, _) = watch::channel(ProcessMetrics::empty());
+    sender
+});
+static SUBSCRIBED: Notify = Notify::const_new();
+
+pub fn subscribe() -> watch::Receiver<ProcessMetrics> {
+    let receiver = UPDATES.subscribe();
+    SUBSCRIBED.notify_one();
+    receiver
+}
 
 /// Starts the sampler. Only called when the admin API is enabled: without a
 /// reader there is no reason to wake up every few seconds.
@@ -64,43 +69,62 @@ pub fn spawn() {
 }
 
 pub fn snapshot() -> ProcessMetrics {
-    *SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner)
+    *UPDATES.borrow()
 }
 
 async fn sample_loop(pid: Pid) {
-    let mut system = System::new();
     let cpu_count = std::thread::available_parallelism()
         .map(|count| count.get())
         .unwrap_or(0);
 
     loop {
-        // Refreshing a single PID reads one /proc entry (or the equivalent) and
-        // takes well under a millisecond, so it runs inline rather than paying
-        // for a trip through `spawn_blocking`.
+        while UPDATES.receiver_count() == 0 {
+            SUBSCRIBED.notified().await;
+        }
+        // Discard CPU history across idle periods so the next delta only
+        // covers time during which an admin is watching.
+        let mut system = System::new();
         system.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[pid]),
             true,
             ProcessRefreshKind::nothing().with_cpu().with_memory(),
         );
-
-        match system.process(pid) {
-            Some(process) => {
-                let sample = ProcessMetrics {
-                    cpu_percent: process.cpu_usage(),
-                    memory_bytes: process.memory(),
-                    virtual_memory_bytes: process.virtual_memory(),
-                    uptime_secs: process.run_time(),
-                    cpu_count,
-                    sampled_at: must_get_timestamp(),
-                };
-                *SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner) = sample;
+        let mut interval = tokio::time::interval_at(
+            tokio::time::Instant::now() + sysinfo::MINIMUM_CPU_UPDATE_INTERVAL,
+            SAMPLE_INTERVAL,
+        );
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = UPDATES.closed() => break,
+                _ = interval.tick() => {}
             }
-            // Unreachable while this task is running, since the task belongs to
-            // the very process being looked up.
-            None => debug!("the current process is missing from the process table"),
-        }
+            // Refreshing a single PID reads one /proc entry (or the equivalent) and
+            // takes well under a millisecond, so it runs inline rather than paying
+            // for a trip through `spawn_blocking`.
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[pid]),
+                true,
+                ProcessRefreshKind::nothing().with_cpu().with_memory(),
+            );
 
-        tokio::time::sleep(SAMPLE_INTERVAL).await;
+            match system.process(pid) {
+                Some(process) => {
+                    let sample = ProcessMetrics {
+                        cpu_percent: process.cpu_usage(),
+                        memory_bytes: process.memory(),
+                        virtual_memory_bytes: process.virtual_memory(),
+                        uptime_secs: process.run_time(),
+                        cpu_count,
+                        sampled_at: must_get_timestamp(),
+                    };
+                    UPDATES.send_replace(sample);
+                }
+                // Unreachable while this task is running, since the task belongs to
+                // the very process being looked up.
+                None => debug!("the current process is missing from the process table"),
+            }
+        }
     }
 }
 
@@ -108,11 +132,35 @@ async fn sample_loop(pid: Pid) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_snapshot_reads_as_empty_before_the_first_sample() {
-        let metrics = snapshot();
-        assert_eq!(metrics.sampled_at, 0);
-        assert_eq!(metrics.memory_bytes, 0);
+    #[tokio::test]
+    async fn sampling_only_runs_while_subscribed_and_resumes() {
+        let task = tokio::spawn(sample_loop(get_current_pid().unwrap()));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(snapshot().sampled_at, 0);
+        let mut first = subscribe();
+        tokio::time::timeout(Duration::from_secs(2), first.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(snapshot().memory_bytes > 0);
+        let mut second = subscribe();
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(6), second.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        drop(second);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let stopped_at = snapshot().sampled_at;
+        tokio::time::sleep(SAMPLE_INTERVAL + Duration::from_millis(100)).await;
+        assert_eq!(snapshot().sampled_at, stopped_at);
+        let mut resumed = subscribe();
+        tokio::time::timeout(Duration::from_secs(2), resumed.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(snapshot().sampled_at > stopped_at);
+        task.abort();
     }
 
     /// Two samples separated by the real interval, to prove the sampler

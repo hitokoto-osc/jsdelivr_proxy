@@ -26,6 +26,7 @@ fn router() -> Router {
         .route("/about", get(index::about))
         .route("/admin", get(admin::panel))
         .route("/admin/api/stats", get(admin::stats))
+        .route("/admin/api/events", get(admin::events))
         .route("/admin/api/cache", get(admin::cache_list))
         .route("/admin/api/cache/purge", post(admin::cache_purge))
         .route("/admin/api/audit", get(admin::audit_list))
@@ -34,6 +35,7 @@ fn router() -> Router {
         .route("/{*path}", get(index::jsdelivr::get))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
+        .layer(axum::middleware::from_fn(crate::metrics::requests::track))
 }
 
 pub async fn init() -> anyhow::Result<()> {
@@ -90,6 +92,7 @@ mod tests {
             .route("/about", get(|| async { "about" }))
             .route("/admin", get(|| async { "panel" }))
             .route("/admin/api/stats", get(|| async { "stats" }))
+            .route("/admin/api/events", get(|| async { "events" }))
             .route("/admin/api/cache", get(|| async { "cache" }))
             .route("/admin/api/cache/purge", post(|| async { "purge" }))
             .route("/admin/api/audit", get(|| async { "audit" }))
@@ -124,6 +127,7 @@ mod tests {
     async fn admin_and_webhook_routes_win_over_the_wildcard() {
         assert_eq!(route("GET", "/admin").await.1, "panel");
         assert_eq!(route("GET", "/admin/api/stats").await.1, "stats");
+        assert_eq!(route("GET", "/admin/api/events").await.1, "events");
         assert_eq!(route("GET", "/admin/api/cache?prefix=npm").await.1, "cache");
         assert_eq!(route("POST", "/admin/api/cache/purge").await.1, "purge");
         assert_eq!(route("GET", "/admin/api/audit").await.1, "audit");
