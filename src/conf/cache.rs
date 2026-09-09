@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::fmt;
 
 /// 进程内缓存配置。
 #[derive(Deserialize, Debug)]
@@ -15,6 +16,32 @@ pub struct Cache {
     /// 只是不进入缓存，避免一个超大文件挤占整个缓存预算。
     #[serde(default = "Cache::default_max_entry_size_mb")]
     pub max_entry_size_mb: u64,
+    /// Both budgets above are measured after compression, so raising the
+    /// compression ratio directly raises how much fits in the cache.
+    #[serde(default)]
+    pub compression: Compression,
+}
+
+/// Codec used to store cached response bodies in memory.
+#[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Compression {
+    /// Keep bodies verbatim, which makes a cache hit a refcount bump and
+    /// nothing else — the right choice when CPU is scarcer than memory.
+    None,
+    #[default]
+    Zstd,
+    Brotli,
+}
+
+impl fmt::Display for Compression {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Compression::None => write!(f, "none"),
+            Compression::Zstd => write!(f, "zstd"),
+            Compression::Brotli => write!(f, "brotli"),
+        }
+    }
 }
 
 const MB: u64 = 1024 * 1024;
@@ -50,6 +77,7 @@ impl Default for Cache {
             ttl_secs: Cache::default_ttl_secs(),
             max_capacity_mb: Cache::default_max_capacity_mb(),
             max_entry_size_mb: Cache::default_max_entry_size_mb(),
+            compression: Compression::default(),
         }
     }
 }
@@ -64,5 +92,19 @@ mod tests {
         assert_eq!(cache.ttl_secs, 7200);
         assert_eq!(cache.max_capacity_bytes(), 256 * MB);
         assert_eq!(cache.max_entry_size_bytes(), (16 * MB) as usize);
+        assert_eq!(cache.compression, Compression::Zstd);
+    }
+
+    #[test]
+    fn compression_deserializes_from_lowercase_names() {
+        for (input, expected) in [
+            ("none", Compression::None),
+            ("zstd", Compression::Zstd),
+            ("brotli", Compression::Brotli),
+        ] {
+            let parsed: Compression =
+                serde_json::from_str(&format!("\"{input}\"")).expect("known codec name");
+            assert_eq!(parsed, expected);
+        }
     }
 }

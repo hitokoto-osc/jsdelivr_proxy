@@ -29,8 +29,11 @@ async fn main() -> anyhow::Result<()> {
     );
 
     info!(
-        "Cache: in-process, ttl={}s, capacity={}MB, max entry={}MB (no external dependency)",
-        CONFIG.cache.ttl_secs, CONFIG.cache.max_capacity_mb, CONFIG.cache.max_entry_size_mb
+        "Cache: in-process, ttl={}s, capacity={}MB, max entry={}MB, compression={} (no external dependency)",
+        CONFIG.cache.ttl_secs,
+        CONFIG.cache.max_capacity_mb,
+        CONFIG.cache.max_entry_size_mb,
+        CONFIG.cache.compression
     );
 
     #[allow(clippy::eq_op)]

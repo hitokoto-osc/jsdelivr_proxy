@@ -15,8 +15,25 @@ HTTP 层基于 [axum](https://github.com/tokio-rs/axum) 0.8 + tower-http，
   weigher 权重，本项目的 weigher 返回条目的实际字节数），默认 256MB。
 * **单条目上限**：超过 `max_entry_size_mb`（默认 16MB）的资源仍会正常返回给客户端，
   但不会进入缓存，避免单个超大文件挤占整个预算。
+* **条目压缩**：缓存里的响应体默认用 **zstd** 压缩（`compression`，可选
+  `none` / `zstd` / `brotli`），上面两项预算都按**压缩后**的体积核算。
 * **并发合并回源**：同一路径上的并发未命中只会触发一次上游请求。
 * 淘汰策略是 moka 的 **W-TinyLFU**（带准入过滤的近似 LRU），而不是严格的 LRU。
+
+### 压缩
+
+`.js` / `.css` / `.json` 这类文本资源 zstd 通常能压到 1/3 ~ 1/4，
+等于同样的 `max_capacity_mb` 能装下三四倍的热点文件；
+代价是**每次命中都要解压一次**（不压缩时命中只是一次引用计数加一）。
+
+| `compression` | 说明 |
+| --- | --- |
+| `zstd`（默认） | 压缩率与速度均衡，解压吞吐在 GB/s 量级 |
+| `brotli` | 文本压缩率略高于 zstd，压缩慢得多；固定 quality 5 |
+| `none` | 不压缩，命中路径是零拷贝，内存里存的就是原始字节 |
+
+已经压过的资源（`woff2`、`png`、`wasm` 等）压不动时会**原样存放**，
+因此开启压缩不会让缓存占用反而上升。压缩等级与字典目前不可配置。
 
 **权衡（相对 Redis 版本的退步）**：缓存位于进程内，**重启即全部丢失**；
 多副本部署时各副本各自持有一份缓存，**不再共享**，回源次数会随副本数上升。
@@ -239,6 +256,7 @@ compose 中通过 `JSDRLIVR_PROXY_SERVER_PORT=8000` 把容器端口固定为 `80
 | `ttl_secs` | `JSDRLIVR_PROXY_CACHE__TTL_SECS` | `7200` | 缓存存活时间（秒） |
 | `max_capacity_mb` | `JSDRLIVR_PROXY_CACHE__MAX_CAPACITY_MB` | `256` | 缓存总字节预算（MB） |
 | `max_entry_size_mb` | `JSDRLIVR_PROXY_CACHE__MAX_ENTRY_SIZE_MB` | `16` | 单条目上限（MB），超过则不缓存 |
+| `compression` | `JSDRLIVR_PROXY_CACHE_COMPRESSION` | `"zstd"` | 条目压缩算法：`none` / `zstd` / `brotli` |
 
 ## 手动构建
 

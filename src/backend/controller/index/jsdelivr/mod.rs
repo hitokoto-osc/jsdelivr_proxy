@@ -7,10 +7,9 @@ use axum::{
 };
 use bytes::Bytes;
 use serde_json::Value;
-use std::sync::Arc;
 use tracing::{error, instrument, warn};
 
-use crate::cache::{self, CachedResource};
+use crate::cache::{self, CacheError, CachedResource};
 use crate::upstream::{self, UpstreamError};
 use crate::utils::response::{fail, fail_with_message, APIResponse};
 use crate::CONFIG;
@@ -75,7 +74,7 @@ fn validate_path(path: &str) -> Result<(), FetchJSDelivrFailureError> {
 /// 错误由 moka 以 `Arc` 返回（同一键上被合并的并发请求共享同一个错误对象）。
 async fn remember_jsdelivr_resource(
     path: String,
-) -> Result<CachedResource, Arc<FetchJSDelivrFailureError>> {
+) -> Result<CachedResource, CacheError<FetchJSDelivrFailureError>> {
     let key = path.clone();
     cache::get_or_fetch(key, async move {
         Ok::<_, FetchJSDelivrFailureError>(upstream::fetch(&path).await?)
@@ -105,14 +104,21 @@ pub async fn get(PathParam(path): PathParam<String>) -> JSDelivrResponse {
         }
         Err(e) => {
             error!("{:?}", e);
-            match e.as_ref() {
-                FetchJSDelivrFailureError::Upstream(UpstreamError::ReqwestOperation(_)) => {
+            match &e {
+                // A body this process compressed itself failed to decompress:
+                // the request is not at fault, so it cannot be a 4xx.
+                CacheError::Decompress(_) => {
                     JSDelivrResponse::Json(fail_with_message(500, None, e.to_string()))
                 }
-                FetchJSDelivrFailureError::Upstream(UpstreamError::RequestStatusCheck(status)) => {
-                    JSDelivrResponse::Json(fail(*status as i64, None))
-                }
-                _ => JSDelivrResponse::Json(fail_with_message(400, None, e.to_string())),
+                CacheError::Fetch(cause) => match cause.as_ref() {
+                    FetchJSDelivrFailureError::Upstream(UpstreamError::ReqwestOperation(_)) => {
+                        JSDelivrResponse::Json(fail_with_message(500, None, e.to_string()))
+                    }
+                    FetchJSDelivrFailureError::Upstream(UpstreamError::RequestStatusCheck(
+                        status,
+                    )) => JSDelivrResponse::Json(fail(*status as i64, None)),
+                    _ => JSDelivrResponse::Json(fail_with_message(400, None, e.to_string())),
+                },
             }
         }
     }
