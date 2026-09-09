@@ -17,6 +17,7 @@ rustc_version = "0.4"
 [dependencies]
 anyhow = "1.0.66"
 axum = "0.8"
+blake3 = "1"
 brotli = "9.0.0"
 bytes = { version = "1.2.1", features = ["serde"] }
 chrono = { version = "0.4.22", features = ["serde"] }

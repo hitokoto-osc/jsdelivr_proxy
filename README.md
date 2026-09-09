@@ -10,7 +10,12 @@ HTTP 层基于 [axum](https://github.com/tokio-rs/axum) 0.8 + tower-http，
 
 ## 缓存
 
-* **TTL 2 小时**，与此前的 Redis 版本一致。
+* **TTL 2 小时**：每个 path 独立过期，命中不续期；预加载刷新只续期对应 path。
+* **内容去重**：path 映射到原始正文的 **BLAKE3** 摘要，相同正文只存一份压缩数据，
+  例如内容相同的 GitHub tag 与 HEAD。Content-Type 仍按 path 保存。
+  映射和正文共用字节预算；正文淘汰后访问对应 path 会重新回源。
+  新增或续期映射时会续期共享正文，但不影响其他 path 的 TTL。
+  按 path 清除只删除映射，无引用正文保留到自身 TTL 到期或容量淘汰；清空缓存则同时删除两者。
 * **按字节计容**：`max_capacity_mb` 是整个缓存的字节预算（moka 的容量单位是
   weigher 权重，本项目的 weigher 返回条目的实际字节数），默认 256MB。
 * **单条目上限**：超过 `max_entry_size_mb`（默认 16MB）的资源仍会正常返回给客户端，
@@ -19,6 +24,17 @@ HTTP 层基于 [axum](https://github.com/tokio-rs/axum) 0.8 + tower-http，
   `none` / `zstd` / `brotli`），上面两项预算都按**压缩后**的体积核算。
 * **并发合并回源**：同一路径上的并发未命中只会触发一次上游请求。
 * 淘汰策略是 moka 的 **W-TinyLFU**（带准入过滤的近似 LRU），而不是严格的 LRU。
+
+管理面板区分可用路径数、独立正文数与无引用正文，展示共享正文节省的压缩后字节数。
+正文压缩比只比较去重后的原始正文与压缩正文，不计映射和摘要开销。
+列表展示正文摘要及全缓存中的共享路径数（不受前缀筛选影响）；每行大小包含完整正文，不能相加作为总占用。
+按路径清除后的提示会说明正文仍可保留，清空全部则释放两类条目。
+
+管理接口的 `entry_count` 统计可用 path 数，`stored_bytes` 统计映射和去重后的正文占用。
+`body_count`、`body_stored_bytes` 和 `raw_bytes` 分别统计保留的独立正文数、压缩正文体积和原始体积，包含无引用正文；
+`orphan_body_count` 和 `orphan_stored_bytes` 单独统计无引用正文数量及占用（含摘要键）。
+`deduplicated_bytes` 统计有效映射共享正文节省的压缩后字节数，不计元数据。
+列表增加 `checksum`（BLAKE3 十六进制摘要）和 `shared_paths`（全缓存有效引用数）。
 
 ### 压缩
 

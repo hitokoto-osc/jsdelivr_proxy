@@ -114,17 +114,21 @@
         <section class="card">
           <h2>缓存</h2>
           <div class="metrics">
-            <div class="metric"><div class="label">条目数</div><div class="value" id="entries">—</div></div>
+            <div class="metric"><div class="label">可用路径数</div><div class="value" id="entries">—</div></div>
             <div class="metric"><div class="label">占用 / 预算</div><div class="value" id="usage">—</div></div>
-            <div class="metric"><div class="label">原始体积</div><div class="value" id="raw">—</div></div>
-            <div class="metric"><div class="label">压缩比</div><div class="value" id="ratio">—</div></div>
+            <div class="metric"><div class="label">去重后原始正文</div><div class="value" id="raw">—</div></div>
+            <div class="metric"><div class="label">正文压缩比</div><div class="value" id="ratio">—</div></div>
+            <div class="metric"><div class="label">独立正文数（含无引用）</div><div class="value" id="bodies">—</div></div>
+            <div class="metric"><div class="label">共享正文节省</div><div class="value" id="deduplicated">—</div></div>
+            <div class="metric"><div class="label">无引用正文 / 占用</div><div class="value" id="orphans">—</div></div>
           </div>
+          <p class="muted">占用含映射和正文；共享节省按压缩后正文计算。无引用正文保留至过期或容量淘汰。</p>
           <p class="muted" id="cache-config">—</p>
         </section>
       </div>
 
       <section class="card">
-        <h2>缓存条目</h2>
+        <h2>缓存路径</h2>
         <div class="toolbar">
           <input id="prefix" placeholder="按前缀筛选，如 gh/owner/repo@HEAD" />
           <button id="refresh-cache">刷新</button>
@@ -138,7 +142,9 @@
               <tr>
                 <th>缓存键</th>
                 <th>类型</th>
-                <th class="num">占用</th>
+                <th>正文摘要</th>
+                <th class="num">共享路径数</th>
+                <th class="num">映射 + 正文</th>
                 <th class="num">原始</th>
                 <th>压缩</th>
                 <th></th>
@@ -147,6 +153,7 @@
             <tbody id="cache-rows"></tbody>
           </table>
         </div>
+        <p class="muted">相同摘要共享一份正文；共享路径数按全缓存统计。每行大小含完整正文，不能相加作为总占用。清除路径不会立即释放共享正文。</p>
         <div class="empty" id="cache-empty" hidden>没有匹配的缓存条目。</div>
       </section>
 
@@ -262,7 +269,10 @@
         $("usage").textContent = bytes(c.stored_bytes) + " / " + bytes(c.max_capacity_bytes);
         $("raw").textContent = bytes(c.raw_bytes);
         $("ratio").textContent =
-          c.stored_bytes > 0 ? (c.raw_bytes / c.stored_bytes).toFixed(2) + "×" : "—";
+          c.body_stored_bytes > 0 ? (c.raw_bytes / c.body_stored_bytes).toFixed(2) + "×" : "—";
+        $("bodies").textContent = c.body_count.toLocaleString();
+        $("deduplicated").textContent = bytes(c.deduplicated_bytes);
+        $("orphans").textContent = c.orphan_body_count.toLocaleString() + " / " + bytes(c.orphan_stored_bytes);
         $("cache-config").textContent =
           `TTL ${c.ttl_secs} 秒 · 单条上限 ${bytes(c.max_entry_size_bytes)} · 压缩 ${c.compression}` +
           ` · Webhook ${data.webhook.enabled ? "已启用" : "未启用"}`;
@@ -277,14 +287,17 @@
           const cells = [
             ["key", entry.key],
             ["", entry.mime],
+            ["key", entry.checksum.slice(0, 12) + "…", entry.checksum],
+            ["num", entry.shared_paths.toLocaleString()],
             ["num", bytes(entry.stored_bytes)],
             ["num", bytes(entry.raw_bytes)],
             ["", entry.compression],
           ];
-          for (const [cls, text] of cells) {
+          for (const [cls, text, title] of cells) {
             const td = document.createElement("td");
             if (cls) td.className = cls;
             td.textContent = text;
+            if (title) td.title = title;
             tr.appendChild(td);
           }
           const action = document.createElement("td");
@@ -362,7 +375,9 @@
             method: "POST",
             body: JSON.stringify(scope),
           });
-          setStatus(`已清除 ${result.removed} 条`, "ok");
+          setStatus(scope.all
+            ? `已清空缓存，移除 ${result.removed} 个路径映射`
+            : `已清除 ${result.removed} 个路径映射；正文保留至过期或淘汰`, "ok");
           await Promise.all([loadStats(), loadCache(), loadAudit()]);
         } catch (e) {
           setStatus(e.message, "error");
