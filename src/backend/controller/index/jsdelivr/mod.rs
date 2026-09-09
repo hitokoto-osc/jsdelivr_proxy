@@ -207,7 +207,24 @@ async fn remember_jsdelivr_resource(
 }
 
 #[instrument(skip(headers))]
-pub async fn get(PathParam(path): PathParam<String>, headers: HeaderMap) -> JSDelivrResponse {
+pub async fn get(PathParam(path): PathParam<String>, headers: HeaderMap) -> Response {
+    let policy = &CONFIG.jsdelivr.referer_check;
+    let mut response = if policy.allows(&headers) {
+        get_resource(path, headers).await.into_response()
+    } else {
+        warn!("referer check denied path {:?}", path);
+        fail_with_message::<Value>(403, None, "Referer not allowed".into()).into_response()
+    };
+    if policy.enabled {
+        // Downstream caches must not reuse an allowed response for another Referer.
+        response
+            .headers_mut()
+            .append(header::VARY, HeaderValue::from_static("Referer"));
+    }
+    response
+}
+
+async fn get_resource(path: String, headers: HeaderMap) -> JSDelivrResponse {
     if let Err(e) = validate_path(&path) {
         error!("{:?}", e);
         return JSDelivrResponse::Json(fail_with_message(400, None, e.to_string()));
