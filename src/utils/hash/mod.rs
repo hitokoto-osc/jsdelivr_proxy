@@ -1,5 +1,6 @@
 //! Constant-time secret handling for the admin API and the cache webhook.
 
+use hmac::KeyInit;
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
